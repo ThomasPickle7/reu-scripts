@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include <inttypes.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -9,10 +10,15 @@
 #define MAP_SIZE 4096UL
 #define MAP_MASK (MAP_SIZE - 1)
 
+// Physical addresses for the loopback test buffers
+#define TEST_SRC_BUFFER_ADDR (DDR_NON_CACHED_BASE_ADDR + 0x01000000) // 16MB offset
+#define TEST_DEST_BUFFER_ADDR (DDR_NON_CACHED_BASE_ADDR + 0x01100000) // 17MB offset
+#define TEST_BUFFER_SIZE 4096
+
 static CoreAXI4DMAController_Regs_t* dma_regs = NULL;
 static int mem_fd = -1;
 
-// Maps the DMA controller's registers.
+// --- Mapping/Unmapping (no changes) ---
 int DMA_MapRegisters(void) {
     if (mem_fd != -1) return 1;
     mem_fd = open("/dev/mem", O_RDWR | O_SYNC);
@@ -23,54 +29,14 @@ int DMA_MapRegisters(void) {
     return 1;
 }
 
-// Unmaps the DMA controller's registers.
 void DMA_UnmapRegisters(void) {
     if (dma_regs != NULL) { munmap((void*)((uintptr_t)dma_regs & ~MAP_MASK), MAP_SIZE); dma_regs = NULL; }
     if (mem_fd != -1) { close(mem_fd); mem_fd = -1; }
 }
 
-// STEP 1 of the handshake: Prepare the descriptor and point the DMA to it.
-int DMA_ArmStream(uintptr_t descriptor_phys_addr, uintptr_t buffer_phys_addr, size_t buffer_size) {
-    if (dma_regs == NULL) { fprintf(stderr, "Error: DMA registers not mapped.\n"); return 0; }
-
-    void* desc_map_base = mmap(0, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, descriptor_phys_addr & ~MAP_MASK);
-    if (desc_map_base == MAP_FAILED) { perror("Failed to map stream descriptor memory"); return 0; }
-    StreamDescriptor_t* stream_desc = (StreamDescriptor_t*)((uint8_t*)desc_map_base + (descriptor_phys_addr & MAP_MASK));
-
-    // Populate the descriptor but leave DATA_READY bit CLEAR.
-    stream_desc->DEST_ADDR_REG = (uint32_t)buffer_phys_addr;
-    stream_desc->BYTE_COUNT_REG = buffer_size;
-    stream_desc->CONFIG_REG = STREAM_DESC_CONFIG_DEST_OP_INCR | STREAM_DESC_CONFIG_VALID;
-
-    // Point the DMA to this descriptor.
-    dma_regs->STREAM_0_ADDR_REG = (uint32_t)descriptor_phys_addr;
-
-    // Enable the completion interrupt.
-    dma_regs->INTR_0_MASK_REG = 0x1;
-
-    munmap(desc_map_base, 4096);
-    return 1;
-}
-
-// STEP 2 of the handshake: Set the DATA_READY bit after getting the first interrupt.
-void DMA_ProvideBuffer(uintptr_t descriptor_phys_addr) {
-    if (dma_regs == NULL) { fprintf(stderr, "Error: DMA registers not mapped.\n"); return; }
-
-    void* desc_map_base = mmap(0, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, descriptor_phys_addr & ~MAP_MASK);
-    if (desc_map_base == MAP_FAILED) { perror("Failed to map stream descriptor memory for update"); return; }
-    StreamDescriptor_t* stream_desc = (StreamDescriptor_t*)((uint8_t*)desc_map_base + (descriptor_phys_addr & MAP_MASK));
-    
-    // Set the data ready bit to un-stall the DMA.
-    stream_desc->CONFIG_REG |= STREAM_DESC_CONFIG_DATA_READY;
-
-    munmap(desc_map_base, 4096);
-}
-
-
+// --- Interrupt Helpers (no changes) ---
 int DMA_GetInterruptStatus(void) {
-    if (dma_regs && (dma_regs->INTR_0_STAT_REG & 0x1)) {
-        return (dma_regs->INTR_0_STAT_REG >> 4) & 0x3F;
-    }
+    if (dma_regs && (dma_regs->INTR_0_STAT_REG & 0x1)) { return (dma_regs->INTR_0_STAT_REG >> 4) & 0x3F; }
     return -1;
 }
 
@@ -78,22 +44,81 @@ void DMA_ClearInterrupt(void) {
     if (dma_regs) dma_regs->INTR_0_CLEAR_REG = 0x1;
 }
 
-void DMA_PrintDataBuffer(uintptr_t buffer_phys_addr, size_t bytes_to_print) {
-    if (mem_fd < 0) { fprintf(stderr, "Error: /dev/mem not open.\n"); return; }
-    if (bytes_to_print == 0) return;
+// --- Diagnostic Loopback Test ---
+int DMA_RunMemoryLoopbackTest(void) {
+    if (dma_regs == NULL) return 0;
+
+    printf("\n--- Starting DMA Memory-to-Memory Loopback Test ---\n");
+
+    // 1. Map source and destination buffers
+    void* src_map_base = mmap(0, TEST_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, TEST_SRC_BUFFER_ADDR & ~MAP_MASK);
+    void* dest_map_base = mmap(0, TEST_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, TEST_DEST_BUFFER_ADDR & ~MAP_MASK);
+    if (src_map_base == MAP_FAILED || dest_map_base == MAP_FAILED) {
+        perror("Failed to map test buffers");
+        if(src_map_base != MAP_FAILED) munmap(src_map_base, TEST_BUFFER_SIZE);
+        if(dest_map_base != MAP_FAILED) munmap(dest_map_base, TEST_BUFFER_SIZE);
+        return 0;
+    }
+    uint8_t* src_buf = (uint8_t*)((uint8_t*)src_map_base + (TEST_SRC_BUFFER_ADDR & MAP_MASK));
+    uint8_t* dest_buf = (uint8_t*)((uint8_t*)dest_map_base + (TEST_DEST_BUFFER_ADDR & MAP_MASK));
     
-    void* buffer_map_base = mmap(0, 4096, PROT_READ, MAP_SHARED, mem_fd, buffer_phys_addr & ~MAP_MASK);
-    if (buffer_map_base == MAP_FAILED) { perror("Failed to map data buffer for printing"); return; }
-    volatile uint8_t* data = (volatile uint8_t*)((uint8_t*)buffer_map_base + (buffer_phys_addr & MAP_MASK));
+    // 2. Prepare buffers: Fill source with a pattern, clear destination
+    printf("  - Preparing buffers...\n");
+    for(int i = 0; i < TEST_BUFFER_SIZE; ++i) { src_buf[i] = (uint8_t)(i % 256); }
+    memset(dest_buf, 0, TEST_BUFFER_SIZE);
+
+    // 3. Configure Internal Descriptor 0 for the mem-to-mem copy
+    printf("  - Configuring Internal Descriptor 0...\n");
+    DmaDescriptor_t* desc = &dma_regs->DESCRIPTOR[0];
+    desc->SOURCE_ADDR_REG = (uint32_t)TEST_SRC_BUFFER_ADDR;
+    desc->DEST_ADDR_REG = (uint32_t)TEST_DEST_BUFFER_ADDR;
+    desc->BYTE_COUNT_REG = TEST_BUFFER_SIZE;
+    desc->NEXT_DESC_ADDR_REG = 0; // Not chaining
     
-    printf("Data Buffer at P:0x%" PRIxPTR " contains:\n  [", buffer_phys_addr);
-    for(size_t i = 0; i < bytes_to_print && i < 4096; ++i) {
-        printf("0x%02X%s", data[i], (i == bytes_to_print - 1 || i == 15) ? "" : ", ");
-        if (i == 15 && bytes_to_print > 16) {
-            printf(" ...");
+    // According to datasheet, firmware must set VALID and both READY bits.
+    uint32_t config = DESC_CONFIG_SOURCE_OP_INCR | DESC_CONFIG_DEST_OP_INCR |
+                      DESC_CONFIG_INTR_ON_PROCESS | DESC_CONFIG_SOURCE_DATA_VALID |
+                      DESC_CONFIG_DEST_DATA_READY;
+    desc->CONFIG_REG = config;
+    desc->CONFIG_REG |= DESC_CONFIG_DESCRIPTOR_VALID; // Set VALID last
+
+    // 4. Start the transfer by writing to the start register
+    printf("  - Kicking off transfer for Descriptor 0...\n");
+    dma_regs->INTR_0_MASK_REG = 0x1; // Enable completion interrupt
+    dma_regs->START_OPERATION_REG = (1U << 0);
+
+    // 5. Wait for completion interrupt
+    printf("  - Waiting for completion interrupt...");
+    fflush(stdout);
+    int success = 0;
+    for (int i = 0; i < 5; ++i) { // 5 second timeout
+        if (DMA_GetInterruptStatus() == 0) { // Expect completion for descriptor 0
+            printf(" OK!\n");
+            DMA_ClearInterrupt();
+            success = 1;
             break;
         }
+        sleep(1);
+        printf(".");
+        fflush(stdout);
     }
-    printf("]\n");
-    munmap(buffer_map_base, 4096);
+    if (!success) {
+        printf(" TIMEOUT!\n");
+    }
+
+    // 6. Verify data if transfer completed
+    if (success) {
+        printf("  - Verifying data...\n");
+        if (memcmp(src_buf, dest_buf, TEST_BUFFER_SIZE) == 0) {
+            printf("  - Data verification successful!\n");
+        } else {
+            printf("  - DATA MISMATCH! Loopback test failed.\n");
+            success = 0;
+        }
+    }
+    
+    munmap(src_map_base, TEST_BUFFER_SIZE);
+    munmap(dest_map_base, TEST_BUFFER_SIZE);
+    
+    return success;
 }
