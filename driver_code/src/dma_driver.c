@@ -9,86 +9,115 @@
 #define MAP_SIZE 4096UL
 #define MAP_MASK (MAP_SIZE - 1)
 
+// Pointer to the virtual memory address of the DMA controller
 static CoreAXI4DMAController_Regs_t* dma_regs = NULL;
+// File descriptor for /dev/mem
 static int mem_fd = -1;
 
-// --- Mapping/Unmapping Functions (Unchanged) ---
+/**
+ * Maps the physical DMA controller registers into the process's virtual address space.
+ */
 int DMA_MapRegisters(void) {
+    if (mem_fd != -1) {
+        printf("Warning: Registers already mapped.\n");
+        return 1;
+    }
+    
     mem_fd = open("/dev/mem", O_RDWR | O_SYNC);
-    if (mem_fd < 0) { perror("Failed to open /dev/mem"); return 0; }
-    void* map_base = mmap(0, MAP_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd,
-                          DMA_CONTROLLER_0_BASE_ADDR & ~MAP_MASK);
-    if (map_base == MAP_FAILED) { perror("mmap failed"); close(mem_fd); return 0; }
+    if (mem_fd < 0) {
+        perror("Failed to open /dev/mem");
+        return 0;
+    }
+    
+    void* map_base = mmap(0, MAP_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, DMA_CONTROLLER_0_BASE_ADDR & ~MAP_MASK);
+    if (map_base == MAP_FAILED) {
+        perror("mmap failed");
+        close(mem_fd);
+        mem_fd = -1;
+        return 0;
+    }
+    
     dma_regs = (CoreAXI4DMAController_Regs_t*)((uint8_t*)map_base + (DMA_CONTROLLER_0_BASE_ADDR & MAP_MASK));
     return 1;
 }
+
+/**
+ * Unmaps the DMA controller registers and closes the memory file descriptor.
+ */
 void DMA_UnmapRegisters(void) {
-    if (dma_regs) {
+    if (dma_regs != NULL) {
         void* map_base = (void*)((uintptr_t)dma_regs & ~MAP_MASK);
-        munmap(map_base, MAP_SIZE); dma_regs = NULL;
+        munmap(map_base, MAP_SIZE);
+        dma_regs = NULL;
     }
-    if (mem_fd != -1) { close(mem_fd); mem_fd = -1; }
+    if (mem_fd != -1) {
+        close(mem_fd);
+        mem_fd = -1;
+    }
 }
 
-// --- Driver Functions (Unchanged) ---
-int DMA_InitCyclicStream(uint8_t num_descriptors, volatile void* buffers[], size_t buffer_size) {
-    if (dma_regs == NULL) { fprintf(stderr, "Error: DMA registers not mapped.\n"); return 0; }
-    if (num_descriptors == 0 || num_descriptors > 32 || buffers == NULL || buffer_size == 0) return 0;
-    printf("--- Initializing DMA for %u-buffer cyclic stream transfer ---\n", num_descriptors);
-    for (uint8_t i = 0; i < num_descriptors; ++i) {
-        DmaDescriptor_t* desc = &dma_regs->DESCRIPTOR[i];
-        uint8_t next_desc_num = (i + 1) % num_descriptors;
-        desc->SOURCE_ADDR_REG = 0;
-        desc->DEST_ADDR_REG = (uint32_t)(uintptr_t)buffers[i];
-        desc->BYTE_COUNT_REG = buffer_size & 0x007FFFFF;
-        desc->NEXT_DESC_ADDR_REG = next_desc_num;
-        uint32_t config = (DESC_OPR_NO_OP << 0) | (DESC_OPR_INCREMENTING << 2) | DESC_CONFIG_CHAIN |
-                          DESC_CONFIG_INTR_ON_PROCESS | DESC_CONFIG_SOURCE_DATA_VALID | DESC_CONFIG_DEST_DATA_READY;
-        desc->CONFIG_REG = config;
-        desc->CONFIG_REG |= DESC_CONFIG_DESCRIPTOR_VALID;
-        printf("  - Descriptor %u: Configured for Buffer at 0x%" PRIxPTR "\n", i, (uintptr_t)buffers[i]);
+/**
+ * Configures the DMA for a single AXI-Stream to Memory transfer.
+ */
+int DMA_SetupStreamToMemory(uintptr_t descriptor_phys_addr, uintptr_t buffer_phys_addr, size_t buffer_size) {
+    if (dma_regs == NULL) {
+        fprintf(stderr, "Error: DMA registers not mapped.\n");
+        return 0;
     }
+
+    printf("--- Configuring Stream-to-Memory Transfer ---\n");
+
+    // Map the physical memory for the stream descriptor into our virtual address space
+    void* desc_map_base = mmap(0, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, descriptor_phys_addr & ~MAP_MASK);
+    if (desc_map_base == MAP_FAILED) {
+        perror("Failed to map stream descriptor memory");
+        return 0;
+    }
+    StreamDescriptor_t* stream_desc = (StreamDescriptor_t*)((uint8_t*)desc_map_base + (descriptor_phys_addr & MAP_MASK));
+
+    // STEP 1: Populate the stream descriptor fields in system memory
+    stream_desc->DEST_ADDR_REG = (uint32_t)buffer_phys_addr;
+    stream_desc->BYTE_COUNT_REG = buffer_size & 0x007FFFFF; // Max size is ~8MB
+    
+    // STEP 2: Set the configuration. Must be marked VALID and READY.
+    uint32_t config = STREAM_DESC_CONFIG_DEST_OP_INCR |  // Write to incrementing addresses
+                      STREAM_DESC_CONFIG_DATA_READY |     // IMPORTANT: Tell DMA the buffer is ready
+                      STREAM_DESC_CONFIG_VALID;           // IMPORTANT: Tell DMA the descriptor is valid
+    stream_desc->CONFIG_REG = config;
+    
+    printf("  - Stream descriptor at P:0x%" PRIxPTR " configured to write %zu bytes to P:0x%" PRIxPTR "\n",
+           descriptor_phys_addr, buffer_size, buffer_phys_addr);
+
+    // STEP 3: Point the DMA controller to our stream descriptor in memory.
+    // Your hardware connects to TDEST=0, so we MUST use STREAM_0_ADDR_REG.
+    dma_regs->STREAM_0_ADDR_REG = (uint32_t)descriptor_phys_addr;
+    printf("  - Wrote descriptor address to DMA's STREAM_0_ADDR_REG.\n");
+
+    // Unmap the descriptor memory now that we've written to it
+    munmap(desc_map_base, 4096);
+    
+    // STEP 4: Enable the "operation complete" interrupt
     dma_regs->INTR_0_MASK_REG = 0x1;
-    printf("--- DMA Initialization Complete ---\n");
+
+    printf("--- DMA is ARMED. Ready to receive stream data. ---\n");
     return 1;
 }
 
-// --- NEW VERIFICATION FUNCTION ---
-int DMA_VerifyConfig(uint8_t descriptor_num, volatile void* buffers[], size_t buffer_size) {
-    if (dma_regs == NULL || descriptor_num >= 32) return 0;
-
-    printf("--- Verifying configuration of Descriptor %u ---\n", descriptor_num);
-    DmaDescriptor_t* desc = &dma_regs->DESCRIPTOR[descriptor_num];
-    int success = 1;
-
-    // Verify Destination Address
-    uint32_t expected_dest = (uint32_t)(uintptr_t)buffers[descriptor_num];
-    if (desc->DEST_ADDR_REG != expected_dest) {
-        printf("  FAIL: DEST_ADDR. Expected: 0x%X, Read: 0x%X\n", expected_dest, desc->DEST_ADDR_REG);
-        success = 0;
-    } else {
-        printf("  OK: DEST_ADDR verified.\n");
+/**
+ * Checks for a completed operation by reading the interrupt status register.
+ */
+int DMA_GetCompletedDescriptor(void) {
+    if (dma_regs && (dma_regs->INTR_0_STAT_REG & 0x1)) { // Check OPS_COMPL bit
+        return (dma_regs->INTR_0_STAT_REG >> 4) & 0x3F; // Return descriptor number
     }
-
-    // Verify Byte Count
-    uint32_t expected_bytes = buffer_size & 0x007FFFFF;
-    if (desc->BYTE_COUNT_REG != expected_bytes) {
-        printf("  FAIL: BYTE_COUNT. Expected: %u, Read: %u\n", expected_bytes, desc->BYTE_COUNT_REG);
-        success = 0;
-    } else {
-        printf("  OK: BYTE_COUNT verified.\n");
-    }
-    
-    if (success) printf("--- Verification PASSED. CPU can talk to DMA correctly. ---\n");
-    else printf("--- Verification FAILED. Check address map or bus connections. ---\n");
-
-    return success;
+    return -1; // No completion interrupt
 }
 
-
-// --- Other Driver Functions (Unchanged) ---
-void DMA_StartCyclic(uint8_t d_num) { if (dma_regs) dma_regs->START_OPERATION_REG = (1U << d_num); }
-int DMA_GetCompletedDescriptor(void) { if (dma_regs && (dma_regs->INTR_0_STAT_REG & 1)) return (dma_regs->INTR_0_STAT_REG >> 4) & 0x3F; return -1; }
-void DMA_ClearCompletionInterrupt(void) { if (dma_regs) dma_regs->INTR_0_CLEAR_REG = 0x1; }
-void DMA_ReturnBuffer(uint8_t d_num) { if (dma_regs && d_num < 32) dma_regs->DESCRIPTOR[d_num].CONFIG_REG |= DESC_CONFIG_DEST_DATA_READY; }
-void DMA_DebugDumpRegisters(uint8_t d_num) { /* ... implementation from before ... */ }
+/**
+ * Clears the "operation complete" flag in the interrupt clear register.
+ */
+void DMA_ClearCompletionInterrupt(void) {
+    if (dma_regs) {
+        dma_regs->INTR_0_CLEAR_REG = 0x1;
+    }
+}

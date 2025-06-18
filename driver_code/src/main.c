@@ -2,76 +2,75 @@
 #include <inttypes.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <string.h>
 #include "dma_driver.h"
 #include "hw_platform.h"
 
-#define NUM_DMA_BUFFERS 4
+// Define the size of the data buffer
 #define BUFFER_SIZE_BYTES 4096
 
-volatile uint8_t dma_buffer_0[BUFFER_SIZE_BYTES];
-volatile uint8_t dma_buffer_1[BUFFER_SIZE_BYTES];
-volatile uint8_t dma_buffer_2[BUFFER_SIZE_BYTES];
-volatile uint8_t dma_buffer_3[BUFFER_SIZE_BYTES];
+// Reserve a fixed physical address for our Stream Descriptor.
+// This must be in a memory region accessible by both the CPU and the DMA.
+#define STREAM_DESCRIPTOR_PHYS_ADDR (DDR_NON_CACHED_BASE_ADDR + 0x00100000) // 1MB offset
 
-volatile void* dma_buffers[NUM_DMA_BUFFERS] = {
-    dma_buffer_0, dma_buffer_1, dma_buffer_2, dma_buffer_3
-};
+// Reserve a fixed physical address for our data buffer.
+#define DATA_BUFFER_PHYS_ADDR (DDR_NON_CACHED_BASE_ADDR + 0x00200000) // 2MB offset
 
 int main() {
-    printf("--- DMA Stream Capture Application ---\n");
+    printf("--- AXI-Stream to Memory DMA Application ---\n");
+    printf("--- Current Time: %s\n", __TIME__);
+    printf("--- Current Date: %s\n", __DATE__);
 
     if (!DMA_MapRegisters()) {
         fprintf(stderr, "Fatal: Could not map DMA registers. Are you running with sudo?\n");
         exit(1);
     }
 
-    if (!DMA_InitCyclicStream(NUM_DMA_BUFFERS, dma_buffers, BUFFER_SIZE_BYTES)) {
-        printf("Fatal: DMA Initialization Failed. Halting.\n");
+    // Initialize the DMA for a stream-to-memory transfer.
+    if (!DMA_SetupStreamToMemory(STREAM_DESCRIPTOR_PHYS_ADDR, DATA_BUFFER_PHYS_ADDR, BUFFER_SIZE_BYTES)) {
+        fprintf(stderr, "Fatal: DMA Stream Initialization Failed.\n");
         DMA_UnmapRegisters();
         exit(1);
     }
 
-    // --- NEW VERIFICATION STEP ---
-    // After configuring the DMA, we read back the values to ensure they were written correctly.
-    // We only need to check one descriptor to confirm the control bus is working.
-    if (!DMA_VerifyConfig(0, dma_buffers, BUFFER_SIZE_BYTES)) {
-         printf("Fatal: DMA configuration could not be verified. Halting.\n");
-         DMA_UnmapRegisters();
-         exit(1);
-    }
-    // If we get here, we know the CPU can successfully write to and read from the DMA registers.
+    // There is NO start command. The transfer is initiated by the FPGA stream source.
+    // We just wait for the completion interrupt.
 
-    DMA_StartCyclic(0);
+    printf("\nWaiting for DMA completion interrupt (Timeout: 5 seconds)...\n");
 
-    const int timeout_limit = 5000000;
-    int timeout_counter = 0;
+    const int timeout_seconds = 5;
+    for (int i = 0; i < timeout_seconds; i++) {
+        // According to the datasheet, a completed stream transfer is reported
+        // with descriptor number 33.
+        if (DMA_GetCompletedDescriptor() == 33) {
+            printf("\nSUCCESS! Stream operation complete interrupt received.\n");
 
-    while(1) {
-        int completed_desc = DMA_GetCompletedDescriptor();
-
-        if (completed_desc != -1) {
-            timeout_counter = 0; // Reset timeout on success
-
-            printf("CPU: Interrupt! Descriptor %d (Buffer at 0x%" PRIxPTR ") is full.\n",
-                   completed_desc, (uintptr_t)dma_buffers[completed_desc]);
-
-            volatile uint8_t* received_data = (volatile uint8_t*)dma_buffers[completed_desc];
-            printf("  - Processing data... First byte is 0x%02X.\n", received_data[0]);
+            // To verify the data, we must map the physical buffer address.
+            void* buffer_map_base = mmap(0, 4096, PROT_READ, MAP_SHARED, fileno(stdin), DATA_BUFFER_PHYS_ADDR & ~0xFFF);
+            if(buffer_map_base != MAP_FAILED) {
+                 volatile uint8_t* received_data = (volatile uint8_t*)((uint8_t*)buffer_map_base + (DATA_BUFFER_PHYS_ADDR & 0xFFF));
+                 printf("  - Data verification: First 4 bytes are [0x%02X, 0x%02X, 0x%02X, 0x%02X]\n",
+                   received_data[0], received_data[1], received_data[2], received_data[3]);
+                 munmap(buffer_map_base, 4096);
+            } else {
+                perror("Could not map data buffer for verification");
+            }
 
             DMA_ClearCompletionInterrupt();
-            DMA_ReturnBuffer(completed_desc);
-
-        } else {
-            timeout_counter++;
-            if (timeout_counter >= timeout_limit) {
-                printf("\n!!! TIMEOUT: No DMA completion interrupt received.\n");
-                DMA_DebugDumpRegisters(0);
-                timeout_counter = 0;
-            }
+            DMA_UnmapRegisters();
+            return 0;
         }
-        usleep(1);
+        sleep(1);
+        printf(".");
+        fflush(stdout);
     }
-    
+
+    printf("\n\n!!! TIMEOUT: No stream completion interrupt was received.\n");
+    printf("Please check:\n");
+    printf("  1. The FPGA is programmed and the stream source is running.\n");
+    printf("  2. The physical memory addresses in hw_platform.h are correct.\n");
+    printf("  3. The interrupt connection from the FPGA to the CPU is correct.\n");
+
     DMA_UnmapRegisters();
-    return 0;
+    return 1;
 }
