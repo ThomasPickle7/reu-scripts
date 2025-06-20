@@ -7,20 +7,20 @@
 int main() {
     printf("--- DMA Sanity Check Application ---\n");
 
-    // STEP 1: Configure the MPU to grant fabric access to DDR memory.
+    // Configure the MPU to grant fabric access to DDR memory.
     // This is required, otherwise the DMA will be blocked by default.
     if (!MPU_Configure_FIC0()) {
         fprintf(stderr, "Fatal: Could not configure MPU. Halting.\n");
         exit(1);
     }
 
-    // STEP 2: Map the DMA controller registers.
+    //  Map the DMA controller registers.
     if (!DMA_MapRegisters()) {
         fprintf(stderr, "Fatal: Could not map DMA registers. Are you running with sudo?\n");
         exit(1);
     }
 
-    // STEP 3: Run the self-contained loopback test.
+    // Run the self-contained loopback test.
     int test_passed = DMA_RunMemoryLoopbackTest();
 
     if (test_passed) {
