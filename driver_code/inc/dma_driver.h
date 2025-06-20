@@ -21,10 +21,10 @@ typedef struct {
     volatile const uint32_t INTR_0_STAT_REG;        // 0x010
     volatile uint32_t       INTR_0_MASK_REG;        // 0x014
     volatile uint32_t       INTR_0_CLEAR_REG;       // 0x018
-    // ... (other interrupt and reserved sections) ...
     uint8_t                 _RESERVED2[0x60 - 0x20];
     DmaDescriptor_t         DESCRIPTOR[4];          // Internal Descriptors start at 0x060
-    // ... (rest of the struct for stream, etc.)
+
+
 } CoreAXI4DMAController_Regs_t;
 
 // Bits for the Internal Buffer Descriptor's CONFIG_REG
