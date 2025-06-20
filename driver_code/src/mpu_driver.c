@@ -26,7 +26,7 @@ int MPU_Configure_FIC0(void) {
     }
     Mpu_Regs_t* mpu_regs = (Mpu_Regs_t*)((uint8_t*)map_base + (MPU_BASE_ADDR & MAP_MASK));
 
-    // CORRECTED: Configure PMP0 for the Non-Cached DDR region (256MB at 0xC000_0000)
+    // Configure PMP0 for the Non-Cached DDR region (256MB at 0xC000_0000)
     // The base is 0xC000_0000 and the size is 256MB (0x10000000).
     // In NAPOT mode, the address field is (base | (size - 1) >> 1)
     uint64_t pmp_addr = 0xC0000000 | (0x0FFFFFFF >> 1); // Sets range 0xC0000000 - 0xCFFFFFFF
