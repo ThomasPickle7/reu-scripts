@@ -18,7 +18,7 @@
 static CoreAXI4DMAController_Regs_t* dma_regs = NULL;
 static int mem_fd = -1;
 
-// --- Mapping/Unmapping (no changes) ---
+// --- Mapping/Unmapping ---
 int DMA_MapRegisters(void) {
     if (mem_fd != -1) return 1;
     mem_fd = open("/dev/mem", O_RDWR | O_SYNC);
@@ -34,7 +34,7 @@ void DMA_UnmapRegisters(void) {
     if (mem_fd != -1) { close(mem_fd); mem_fd = -1; }
 }
 
-// --- Interrupt Helpers (no changes) ---
+// --- Interrupt Helpers ---
 int DMA_GetInterruptStatus(void) {
     if (dma_regs && (dma_regs->INTR_0_STAT_REG & 0x1)) { return (dma_regs->INTR_0_STAT_REG >> 4) & 0x3F; }
     return -1;
@@ -50,7 +50,7 @@ int DMA_RunMemoryLoopbackTest(void) {
 
     printf("\n--- Starting DMA Memory-to-Memory Loopback Test ---\n");
 
-    // 1. Map source and destination buffers
+    // Map source and destination buffers
     void* src_map_base = mmap(0, TEST_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, TEST_SRC_BUFFER_ADDR & ~MAP_MASK);
     void* dest_map_base = mmap(0, TEST_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, TEST_DEST_BUFFER_ADDR & ~MAP_MASK);
     if (src_map_base == MAP_FAILED || dest_map_base == MAP_FAILED) {
@@ -62,12 +62,12 @@ int DMA_RunMemoryLoopbackTest(void) {
     uint8_t* src_buf = (uint8_t*)((uint8_t*)src_map_base + (TEST_SRC_BUFFER_ADDR & MAP_MASK));
     uint8_t* dest_buf = (uint8_t*)((uint8_t*)dest_map_base + (TEST_DEST_BUFFER_ADDR & MAP_MASK));
     
-    // 2. Prepare buffers: Fill source with a pattern, clear destination
+    // Prepare buffers: Fill source with a pattern, clear destination
     printf("  - Preparing buffers...\n");
     for(int i = 0; i < TEST_BUFFER_SIZE; ++i) { src_buf[i] = (uint8_t)(i % 256); }
     memset(dest_buf, 0, TEST_BUFFER_SIZE);
 
-    // 3. Configure Internal Descriptor 0 for the mem-to-mem copy
+    // Configure Internal Descriptor 0 for the mem-to-mem copy
     printf("  - Configuring Internal Descriptor 0...\n");
     DmaDescriptor_t* desc = &dma_regs->DESCRIPTOR[0];
     desc->SOURCE_ADDR_REG = (uint32_t)TEST_SRC_BUFFER_ADDR;
@@ -82,12 +82,12 @@ int DMA_RunMemoryLoopbackTest(void) {
     desc->CONFIG_REG = config;
     desc->CONFIG_REG |= DESC_CONFIG_DESCRIPTOR_VALID; // Set VALID last
 
-    // 4. Start the transfer by writing to the start register
+    // Start the transfer by writing to the start register
     printf("  - Kicking off transfer for Descriptor 0...\n");
     dma_regs->INTR_0_MASK_REG = 0x1; // Enable completion interrupt
     dma_regs->START_OPERATION_REG = (1U << 0);
 
-    // 5. Wait for completion interrupt
+    // Wait for completion interrupt
     printf("  - Waiting for completion interrupt...");
     fflush(stdout);
     int success = 0;
@@ -106,7 +106,7 @@ int DMA_RunMemoryLoopbackTest(void) {
         printf(" TIMEOUT!\n");
     }
 
-    // 6. Verify data if transfer completed
+    // Verify data if transfer completed
     if (success) {
         printf("  - Verifying data...\n");
         if (memcmp(src_buf, dest_buf, TEST_BUFFER_SIZE) == 0) {
