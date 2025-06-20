@@ -1,6 +1,5 @@
 #ifndef MPU_DRIVER_H
 #define MPU_DRIVER_H
-
 #include <stdint.h>
 
 /**
@@ -15,15 +14,15 @@ typedef volatile uint64_t MpuPmpEntry_t;
  */
 typedef struct {
     MpuPmpEntry_t PMPCFG[16]; // 16 PMP entries per MPU for FIC0
-    uint8_t       _RESERVED[0x80 - (sizeof(MpuPmpEntry_t) * 16)];
-    volatile const uint64_t STATUS;
+    uint8_t       _RESERVED[0x80 - (sizeof(MpuPmpEntry_t) * 16)]; // Reserved space to align to 128 bytes
+    volatile const uint64_t STATUS; // Status register for the MPU
 } Mpu_Regs_t;
 
 
 // Bit definitions for the PMPCFG register's MODE field (bits 63:56)
-#define MPU_MODE_READ_EN        (1ULL << 56)
-#define MPU_MODE_WRITE_EN       (1ULL << 57)
-#define MPU_MODE_EXEC_EN        (1ULL << 58)
+#define MPU_MODE_READ_EN        (1ULL << 56) // Enable Read access
+#define MPU_MODE_WRITE_EN       (1ULL << 57) // Enable Write access
+#define MPU_MODE_EXEC_EN        (1ULL << 58) // Enable Execute access
 #define MPU_MODE_MATCH_NAPOT    (3ULL << 59) // Naturally Aligned Power-of-Two
 #define MPU_MODE_LOCKED         (1ULL << 63) // Lock the entry once configured
 

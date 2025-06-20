@@ -11,8 +11,10 @@
 int MPU_Configure_FIC0(void) {
     printf("--- Configuring MPU for FIC0 ---\n");
 
+    // Open /dev/mem to access physical memory
     int mem_fd = open("/dev/mem", O_RDWR | O_SYNC);
     if (mem_fd < 0) {
+        // Failed to open /dev/mem, likely due to permissions
         perror("MPU Config: Failed to open /dev/mem");
         return 0;
     }

@@ -15,32 +15,40 @@ typedef struct {
 
 // Full register map of the DMA Controller
 typedef struct {
-    volatile const uint32_t VERSION_REG;            // 0x000
-    volatile uint32_t       START_OPERATION_REG;    // 0x004
-    uint8_t                 _RESERVED1[0x10 - 0x08];
-    volatile const uint32_t INTR_0_STAT_REG;        // 0x010
-    volatile uint32_t       INTR_0_MASK_REG;        // 0x014
-    volatile uint32_t       INTR_0_CLEAR_REG;       // 0x018
-    uint8_t                 _RESERVED2[0x60 - 0x20];
-    DmaDescriptor_t         DESCRIPTOR[4];          // Internal Descriptors start at 0x060
+    volatile const uint32_t VERSION_REG;            // DMA Controller Version Register
+    volatile uint32_t       START_OPERATION_REG;    // DMA Start Operation Register
+    uint8_t                 _RESERVED1[0x10 - 0x08]; // Reserved space for alignment
+    volatile const uint32_t INTR_0_STAT_REG;        // Interrupt Status Register for Descriptor 0
+    volatile uint32_t       INTR_0_MASK_REG;        // Interrupt Mask Register for Descriptor 0
+    volatile uint32_t       INTR_0_CLEAR_REG;       // Interrupt Clear Register for Descriptor 0    
+    uint8_t                 _RESERVED2[0x60 - 0x20]; // Reserved space for alignment
+    DmaDescriptor_t         DESCRIPTOR[4];          // Internal Buffer Descriptors (0-3)
 
 
 } CoreAXI4DMAController_Regs_t;
 
 // Bits for the Internal Buffer Descriptor's CONFIG_REG
-#define DESC_CONFIG_SOURCE_OP_INCR      (0b01 << 0)
-#define DESC_CONFIG_DEST_OP_INCR        (0b01 << 2)
-#define DESC_CONFIG_CHAIN               (1U << 10)
-#define DESC_CONFIG_INTR_ON_PROCESS     (1U << 12)
-#define DESC_CONFIG_SOURCE_DATA_VALID   (1U << 13)
-#define DESC_CONFIG_DEST_DATA_READY     (1U << 14)
-#define DESC_CONFIG_DESCRIPTOR_VALID    (1U << 15)
+#define DESC_CONFIG_SOURCE_OP_INCR      (0b01 << 0) // Source address increment
+#define DESC_CONFIG_DEST_OP_INCR        (0b01 << 2) // Destination address increment
+#define DESC_CONFIG_CHAIN               (1U << 10) // Enable chaining to next descriptor
+#define DESC_CONFIG_INTR_ON_PROCESS     (1U << 12) // Interrupt on process completion
+#define DESC_CONFIG_SOURCE_DATA_VALID   (1U << 13) // Source data is valid
+#define DESC_CONFIG_DEST_DATA_READY     (1U << 14) // Destination data is ready
+#define DESC_CONFIG_DESCRIPTOR_VALID    (1U << 15) // Descriptor is valid for processing
+a
 
-/****************************************************************
- * PUBLIC DRIVER API
- ****************************************************************/
-
+/**
+ * @brief Maps the DMA controller registers into the process's address space.
+ * This function opens /dev/mem, maps the DMA controller's registers, and
+ * returns a pointer to the mapped registers.
+ */
 int DMA_MapRegisters(void);
+
+/**
+ * @brief Unmaps the DMA controller registers from the process's address space.
+ * This function cleans up the memory mapping created by DMA_MapRegisters.
+ * It should be called before the program exits to avoid memory leaks.
+ */
 void DMA_UnmapRegisters(void);
 
 /**
@@ -52,8 +60,17 @@ void DMA_UnmapRegisters(void);
  */
 int DMA_RunMemoryLoopbackTest(void);
 
-// Interrupt handling
+/**
+ * @brief Gets the current interrupt status for Descriptor 0.
+ * This function checks the interrupt status register for Descriptor 0 and
+ * returns the status bits.
+ */
 int DMA_GetInterruptStatus(void);
+
+/**
+ * @brief Clears the interrupt status for Descriptor 0.
+ * This function clears the interrupt status register for Descriptor 0.
+ */
 void DMA_ClearInterrupt(void);
 
 #endif // DMA_DRIVER_H

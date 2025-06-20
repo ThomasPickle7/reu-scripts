@@ -1,7 +1,3 @@
-# =============================================================================
-# A Simple Makefile for a RISC-V 64-bit Linux Application
-# =============================================================================
-
 # --- Toolchain Definition ---
 # On the BeagleV, we use the native compiler, so CROSS_COMPILE is empty.
 CROSS_COMPILE ?=
@@ -35,7 +31,7 @@ OBJS = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(SRCS))
 
 
 # =============================================================================
-# Makefile Rules (The "Recipes")
+# Makefile Rules
 # =============================================================================
 
 all: $(TARGET_ELF)

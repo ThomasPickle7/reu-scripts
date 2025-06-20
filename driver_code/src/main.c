@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include "dma_driver.h"
-#include "mpu_driver.h" // Include the new MPU driver header
+#include "mpu_driver.h"
 
 int main() {
     printf("--- DMA Sanity Check Application ---\n");
