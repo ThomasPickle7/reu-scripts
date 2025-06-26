@@ -1,0 +1,66 @@
+{
+    "Version": "1.0",
+    "title": "Interrupt Map Report",
+    "date": "Thu Jun 26 14:49:41 2025",
+    "project_name": "BVF_GATEWARE_025T",
+    "project_location": "\/home\/vboxuser\/mem-access-gateware\/work\/libero",
+    "SmartDesign name": "MY_CUSTOM_FPGA_DESIGN_64FE066A",
+    "Processor interrupt map": [
+        {
+            "Processor instance": "BVF_RISCV_SUBSYSTEM\/PF_SOC_MSS",
+            "Processor component": "PF_SOC_MSS",
+            "Component type": "MSS",
+            "Interrupt connection map (Hierarchical driver pin name - Interrupt pin name)": [
+                {
+                    "Interrupt pin": "MSS_INT_F2M[2]",
+                    "PLIC": "120",
+                    "Driver pin": "PHY_INTn",
+                    "Driver component": "",
+                    "Driver instance": ""
+                },
+                {
+                    "Interrupt pin": "MSS_INT_F2M[3]",
+                    "PLIC": "121",
+                    "Driver pin": "FPGA_MEM_INTERFACE_0\/DMA_CONTROLLER_0:INTERRUPT[0]",
+                    "Driver component": "DMA_CONTROLLER",
+                    "Driver instance": "FPGA_MEM_INTERFACE_0\/DMA_CONTROLLER_0"
+                },
+                {
+                    "Interrupt pin": "MSS_INT_F2M[59]",
+                    "PLIC": "177",
+                    "Driver pin": "BVF_RISCV_SUBSYSTEM\/IHC_SUBSYSTEM_0\/U54_4_IRQ_AGGREGATOR:IRQ",
+                    "Driver component": "MIV_IHCIA",
+                    "Driver instance": "BVF_RISCV_SUBSYSTEM\/IHC_SUBSYSTEM_0\/U54_4_IRQ_AGGREGATOR"
+                },
+                {
+                    "Interrupt pin": "MSS_INT_F2M[60]",
+                    "PLIC": "178",
+                    "Driver pin": "BVF_RISCV_SUBSYSTEM\/IHC_SUBSYSTEM_0\/U54_3_IRQ_AGGREGATOR:IRQ",
+                    "Driver component": "MIV_IHCIA",
+                    "Driver instance": "BVF_RISCV_SUBSYSTEM\/IHC_SUBSYSTEM_0\/U54_3_IRQ_AGGREGATOR"
+                },
+                {
+                    "Interrupt pin": "MSS_INT_F2M[61]",
+                    "PLIC": "179",
+                    "Driver pin": "BVF_RISCV_SUBSYSTEM\/IHC_SUBSYSTEM_0\/U54_2_IRQ_AGGREGATOR:IRQ",
+                    "Driver component": "MIV_IHCIA",
+                    "Driver instance": "BVF_RISCV_SUBSYSTEM\/IHC_SUBSYSTEM_0\/U54_2_IRQ_AGGREGATOR"
+                },
+                {
+                    "Interrupt pin": "MSS_INT_F2M[62]",
+                    "PLIC": "180",
+                    "Driver pin": "BVF_RISCV_SUBSYSTEM\/IHC_SUBSYSTEM_0\/U54_1_IRQ_AGGREGATOR:IRQ",
+                    "Driver component": "MIV_IHCIA",
+                    "Driver instance": "BVF_RISCV_SUBSYSTEM\/IHC_SUBSYSTEM_0\/U54_1_IRQ_AGGREGATOR"
+                },
+                {
+                    "Interrupt pin": "MSS_INT_F2M[63]",
+                    "PLIC": "181",
+                    "Driver pin": "BVF_RISCV_SUBSYSTEM\/IHC_SUBSYSTEM_0\/E51_IRQ_AGGREGATOR_0:IRQ",
+                    "Driver component": "MIV_IHCIA",
+                    "Driver instance": "BVF_RISCV_SUBSYSTEM\/IHC_SUBSYSTEM_0\/E51_IRQ_AGGREGATOR_0"
+                }
+            ]
+        }
+    ]
+}
