@@ -20,7 +20,7 @@ module axi_stream_pin_source (
     localparam COLLECT = 1'b0;
     localparam ACTIVE  = 1'b1;
     
-    reg state, next_state;
+    reg state, next_state;         // Current and next state of the state machine
     reg [2:0] byte_counter;        // 0-7 for collecting 8 bytes
     reg [63:0] data_accumulator;   // Accumulate 8 bytes into 64-bit word
     

@@ -35,7 +35,7 @@ typedef struct {
 #define DESC_CONFIG_SOURCE_DATA_VALID   (1U << 13) // Source data is valid
 #define DESC_CONFIG_DEST_DATA_READY     (1U << 14) // Destination data is ready
 #define DESC_CONFIG_DESCRIPTOR_VALID    (1U << 15) // Descriptor is valid for processing
-a
+
 
 /**
  * @brief Maps the DMA controller registers into the process's address space.
