@@ -10,13 +10,11 @@
 #define MAP_SIZE 4096UL // 4KB
 #define MAP_MASK (MAP_SIZE - 1) // Mask for the mapping size
 
-// Physical addresses for the loopback test buffers
-#define TEST_SRC_BUFFER_ADDR (DDR_NON_CACHED_BASE_ADDR + 0x01000000) // 16MB offset
-#define TEST_DEST_BUFFER_ADDR (DDR_NON_CACHED_BASE_ADDR + 0x01100000) // 17MB offset
-#define TEST_BUFFER_SIZE 4096 // 4KB buffer size for the loopback test
-
-// Placeholder for the cache line size. Please replace with the actual value for your processor.
-#define CACHE_LINE_SIZE 64
+// MODIFICATION: Changed buffer addresses to fall within the reserved-memory region
+// defined in the device tree (starts at 0xc8000000).
+#define TEST_SRC_BUFFER_ADDR  0xc8000000UL // 0MB offset within reserved region
+#define TEST_DEST_BUFFER_ADDR 0xc8100000UL // 1MB offset within reserved region
+#define TEST_BUFFER_SIZE      4096 // 4KB buffer size for the loopback test
 
 static CoreAXI4DMAController_Regs_t* dma_regs = NULL;
 static int mem_fd = -1;
@@ -62,30 +60,23 @@ int DMA_RunMemoryLoopbackTest(void) {
     printf("\n--- Starting DMA Memory-to-Memory Loopback Test ---\n");
 
     // Map source and destination buffers
-    void* src_map_base = mmap(0, TEST_BUFFER_SIZE + CACHE_LINE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, TEST_SRC_BUFFER_ADDR & ~MAP_MASK);
-    void* dest_map_base = mmap(0, TEST_BUFFER_SIZE + CACHE_LINE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, TEST_DEST_BUFFER_ADDR & ~MAP_MASK);
+    void* src_map_base = mmap(0, TEST_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, TEST_SRC_BUFFER_ADDR & ~MAP_MASK);
+    void* dest_map_base = mmap(0, TEST_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, TEST_DEST_BUFFER_ADDR & ~MAP_MASK);
 
     // Check if the mappings were successful
     if (src_map_base == MAP_FAILED || dest_map_base == MAP_FAILED) {
         perror("Failed to map test buffers");
-        if(src_map_base != MAP_FAILED) munmap(src_map_base, TEST_BUFFER_SIZE + CACHE_LINE_SIZE);
-        if(dest_map_base != MAP_FAILED) munmap(dest_map_base, TEST_BUFFER_SIZE + CACHE_LINE_SIZE);
+        if(src_map_base != MAP_FAILED) munmap(src_map_base, TEST_BUFFER_SIZE);
+        if(dest_map_base != MAP_FAILED) munmap(dest_map_base, TEST_BUFFER_SIZE);
         return 0;
     }
-
-    // Align the buffers to the cache line size
-    uint8_t* src_buf = (uint8_t*)(((uintptr_t)src_map_base + CACHE_LINE_SIZE - 1) & ~(CACHE_LINE_SIZE - 1));
-    uint8_t* dest_buf = (uint8_t*)(((uintptr_t)dest_map_base + CACHE_LINE_SIZE - 1) & ~(CACHE_LINE_SIZE - 1));
-
+    uint8_t* src_buf = (uint8_t*)((uint8_t*)src_map_base + (TEST_SRC_BUFFER_ADDR & MAP_MASK));
+    uint8_t* dest_buf = (uint8_t*)((uint8_t*)dest_map_base + (TEST_DEST_BUFFER_ADDR & MAP_MASK));
+    
     // Prepare buffers: Fill source with a pattern, clear destination
     printf("  - Preparing buffers...\n");
     for(int i = 0; i < TEST_BUFFER_SIZE; ++i) { src_buf[i] = (uint8_t)(i % 256); }
     memset(dest_buf, 0, TEST_BUFFER_SIZE);
-
-    // Invalidate destination buffer cache before the DMA transfer
-    for (int i = 0; i < TEST_BUFFER_SIZE; i += CACHE_LINE_SIZE) {
-        __builtin___clear_cache((char*)dest_buf + i, (char*)dest_buf + i + CACHE_LINE_SIZE);
-    }
 
     // Configure Internal Descriptor 0 for the mem-to-mem copy
     printf("  - Configuring Internal Descriptor 0...\n");
@@ -94,8 +85,8 @@ int DMA_RunMemoryLoopbackTest(void) {
     desc->DEST_ADDR_REG = (uint32_t)TEST_DEST_BUFFER_ADDR;
     desc->BYTE_COUNT_REG = TEST_BUFFER_SIZE;
     desc->NEXT_DESC_ADDR_REG = 0; // Not chaining
-
-    // According to the datasheet, firmware must set VALID and both READY bits.
+    
+    // According to datasheet, firmware must set VALID and both READY bits.
     uint32_t config = DESC_CONFIG_SOURCE_OP_INCR | DESC_CONFIG_DEST_OP_INCR |
                       DESC_CONFIG_INTR_ON_PROCESS | DESC_CONFIG_SOURCE_DATA_VALID |
                       DESC_CONFIG_DEST_DATA_READY;
@@ -106,9 +97,6 @@ int DMA_RunMemoryLoopbackTest(void) {
     printf("  - Kicking off transfer for Descriptor 0...\n");
     dma_regs->INTR_0_MASK_REG = 0x1; // Enable completion interrupt
     dma_regs->START_OPERATION_REG = (1U << 0);
-
-    // Add a small delay to ensure the DMA controller has processed the start command
-    usleep(100);
 
     // Wait for completion interrupt
     printf("  - Waiting for completion interrupt...");
@@ -129,11 +117,6 @@ int DMA_RunMemoryLoopbackTest(void) {
         printf(" TIMEOUT!\n");
     }
 
-    // Invalidate source buffer cache after the DMA transfer
-    for (int i = 0; i < TEST_BUFFER_SIZE; i += CACHE_LINE_SIZE) {
-        __builtin___clear_cache((char*)src_buf + i, (char*)src_buf + i + CACHE_LINE_SIZE);
-    }
-
     // Verify data if transfer completed
     if (success) {
         printf("  - Verifying data...\n");
@@ -144,9 +127,16 @@ int DMA_RunMemoryLoopbackTest(void) {
             success = 0;
         }
     }
-
-    munmap(src_map_base, TEST_BUFFER_SIZE + CACHE_LINE_SIZE);
-    munmap(dest_map_base, TEST_BUFFER_SIZE + CACHE_LINE_SIZE);
-
+    
+    munmap(src_map_base, TEST_BUFFER_SIZE);
+    munmap(dest_map_base, TEST_BUFFER_SIZE);
+    
     return success;
+}
+
+uint32_t DMA_ReadVersion(void) {
+    if (dma_regs) {
+        return dma_regs->VERSION_REG;
+    }
+    return 0;
 }

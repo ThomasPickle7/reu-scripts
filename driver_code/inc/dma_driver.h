@@ -73,4 +73,6 @@ int DMA_GetInterruptStatus(void);
  */
 void DMA_ClearInterrupt(void);
 
+uint32_t DMA_ReadVersion(void);
+
 #endif // DMA_DRIVER_H
