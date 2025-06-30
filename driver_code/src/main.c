@@ -26,9 +26,9 @@
  * Each descriptor is 32 bytes.
  */
 typedef struct {
-    volatile uint32_t CONFIG_REG;           // Offset +0x00
-    volatile uint32_t BYTE_COUNT_REG;       // Offset +0x04
-    volatile uint32_t SOURCE_ADDR_REG;      // Offset +0x08
+    volatile uint32_t CONFIG_REG;           
+    volatile uint32_t BYTE_COUNT_REG;       
+    volatile uint32_t SOURCE_ADDR_REG;      
     volatile uint32_t DEST_ADDR_REG;        // Offset +0x0C
     volatile uint32_t NEXT_DESC_ADDR_REG;   // Offset +0x10
     uint8_t           _RESERVED[0x20 - 0x14]; // Pad to 32 bytes total
