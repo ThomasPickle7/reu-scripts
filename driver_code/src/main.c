@@ -2,16 +2,17 @@
 /*
  * DMA test suite for PolarFire SoC, focused on AXI4-Stream to Memory.
  *
- * v22: Corrected Memory Mapping for Non-Cacheable Regions
- * - The 'msync failed: Invalid argument' error persisted because the target
- * DDR region (0xC8000000 onwards) is configured as NON-CACHEABLE memory.
- * - Cache synchronization operations (msync) are invalid on non-cacheable
- * memory, as there is no CPU cache to flush from or invalidate.
- * - The fix is to remove all calls to msync(). Coherency is guaranteed by
- * the hardware/kernel, as all accesses (CPU and DMA) to this region
- * bypass the cache and go directly to physical DDR.
- * - Simplified mmap() calls to reflect the actual size needed, as page-size
- * rounding for msync() is no longer required.
+ * v25: Added Extensive Debugging Printouts
+ * - Added a new function, print_debug_state, to be called immediately
+ * before the application waits for the DMA interrupt.
+ * - This function reads back and prints the state of:
+ * 1. The AXI Stream Generator's control registers, to verify that the
+ * writes to start the stream were successful.
+ * 2. The CoreAXI4DMAController's key registers (interrupt mask, stream
+ * descriptor address), to verify the receiver is configured correctly.
+ * 3. The first stream descriptor in DDR memory, to verify it was
+ * written correctly by the CPU.
+ * - This provides a complete snapshot of the hardware state to diagnose the hang.
  */
 
 #include <stdio.h>
@@ -22,23 +23,13 @@
 #include <sys/mman.h>
 #include <errno.h>
 #include <stdint.h>
-#include <time.h>       // For high-resolution timing
-#include "mpu_driver.h" // For MPU setup
+#include <time.h>
+#include "mpu_driver.h"
 
-/*
- * This struct represents the AXI4-Stream descriptor that resides
- * in system memory (DDR), not in the DMA controller's registers.
- */
-typedef struct {
-    volatile uint32_t CONFIG_REG;       // Offset +0x00
-    volatile uint32_t BYTE_COUNT_REG;   // Offset +0x04
-    volatile uint32_t DEST_ADDR_REG;    // Offset +0x08
-} DmaStreamDescriptor_t;
-
+// --- Peripheral Definitions ---
 
 /*
  * This struct directly mirrors the register layout of the CoreAXI4DMAController.
- * It is simplified to only include registers relevant to the stream test.
  */
 typedef struct {
     volatile const uint32_t VERSION_REG;
@@ -48,122 +39,61 @@ typedef struct {
     volatile uint32_t       INTR_0_MASK_REG;
     volatile uint32_t       INTR_0_CLEAR_REG;
     uint8_t                 _RESERVED2[0x460 - 0x1C];
-    volatile uint32_t       STREAM_ADDR_REG[4]; // Offsets 0x460, 0x464, 0x468, 0x46C
+    volatile uint32_t       STREAM_ADDR_REG[4];
 } CoreAXI4DMAController_Regs_t;
 
-// Device tree names
+/*
+ * This struct represents the AXI4-Stream descriptor that resides in system memory.
+ */
+typedef struct {
+    volatile uint32_t CONFIG_REG;
+    volatile uint32_t BYTE_COUNT_REG;
+    volatile uint32_t DEST_ADDR_REG;
+} DmaStreamDescriptor_t;
+
+/*
+ * This struct mirrors the APB registers of the AXI4_STREAM_DATA_GENERATOR
+ */
+typedef struct {
+    volatile uint32_t TRANS_SIZE_REG;
+    volatile uint32_t START_REG;
+    volatile uint32_t RESET_GENERATOR_REG;
+} AxiStreamGen_Regs_t;
+
+
+// --- Device and Memory Configuration ---
 #define UIO_DMA_DEVNAME         "dma-controller@60010000"
 
-// Memory addresses and test parameters
+// IMPORTANT: You must verify this address from your FPGA design's memory map.
+#define AXI_STREAM_GEN_BASE     0x60020000UL
+
 #define DDR_BASE                0xc8000000UL
 #define NUM_STREAM_BUFFERS      4
-#define STREAM_BUFFER_SIZE      (1024 * 1024) // 1MB per buffer
+#define STREAM_BUFFER_SIZE      (1024 * 1024)
 #define STREAM_DEST_BASE        DDR_BASE
 #define STREAM_DESCRIPTOR_BASE  (STREAM_DEST_BASE + (NUM_STREAM_BUFFERS * STREAM_BUFFER_SIZE))
-#define NUM_STREAM_TRANSFERS    16 // Must be a multiple of NUM_STREAM_BUFFERS for this test
+#define NUM_STREAM_TRANSFERS    16
 
-// --- DMA Configuration Bit Flags ---
+// --- Bit Flags & Constants ---
 #define STREAM_OP_INCR          (0b01)
 #define STREAM_FLAG_DEST_RDY    (1U << 2)
 #define STREAM_FLAG_VALID       (1U << 3)
-#define STREAM_CONF_BASE        (STREAM_OP_INCR)
+#define STREAM_CONF_BASE        (STREAM_OP_INCR | STREAM_FLAG_VALID)
 
-// DMA Control values
-#define FDMA_START(n)           (1U << (n))
 #define FDMA_IRQ_MASK_ALL       (0x0FU)
 #define FDMA_IRQ_CLEAR_ALL      (0x0FU)
 
-// Helper constants
 #define SYSFS_PATH_LEN          (128)
 #define ID_STR_LEN              (32)
 #define UIO_DEVICE_PATH_LEN     (32)
 #define NUM_UIO_DEVICES         (32)
 #define MAP_SIZE                4096UL
 
-// --- Helper Functions ---
-
-static int get_uio_device_number(const char *id) {
-    FILE *fp; int i; char file_id[ID_STR_LEN]; char sysfs_path[SYSFS_PATH_LEN];
-    for (i = 0; i < NUM_UIO_DEVICES; i++) {
-        snprintf(sysfs_path, SYSFS_PATH_LEN, "/sys/class/uio/uio%d/name", i);
-        fp = fopen(sysfs_path, "r"); if (fp == NULL) break;
-        fscanf(fp, "%31s", file_id); fclose(fp);
-        if (strncmp(file_id, id, strlen(id)) == 0) return i;
-    }
-    return -1;
-}
-
-void reset_interrupt_state(CoreAXI4DMAController_Regs_t* dma_regs, int dma_uio_fd) {
-    // Disable and clear any pending hardware interrupts in the DMA controller
-    dma_regs->INTR_0_MASK_REG = 0;
-    dma_regs->INTR_0_CLEAR_REG = FDMA_IRQ_CLEAR_ALL;
-
-    // Perform a non-blocking read to clear any pending interrupt count in the UIO driver.
-    // This prevents an immediate return from the first blocking read() call.
-    uint32_t dummy_irq_count;
-    int flags = fcntl(dma_uio_fd, F_GETFL, 0);
-    fcntl(dma_uio_fd, F_SETFL, flags | O_NONBLOCK);
-    read(dma_uio_fd, &dummy_irq_count, sizeof(dummy_irq_count));
-    fcntl(dma_uio_fd, F_SETFL, flags); // Restore original flags
-
-    // Re-enable interrupt generation for the UIO device
-    uint32_t irq_enable = 1;
-    write(dma_uio_fd, &irq_enable, sizeof(irq_enable));
-}
-
-void generate_test_data(uint8_t* buffer, size_t size, uint8_t seed) {
-    printf("  Generating %zu bytes of reference data with seed 0x%02X...\n", size, seed);
-    for (size_t i = 0; i < size; ++i) {
-        buffer[i] = (uint8_t)((i + seed) * 13 + ((i + seed) >> 8) * 7);
-    }
-}
-
-int verify_stream_data(uint8_t* actual, size_t size, int transfer_num) {
-    printf("\n--- Verifying transfer %d ---\n", transfer_num);
-    
-    // Allocate a temporary buffer for the expected data
-    uint8_t* expected = malloc(size);
-    if (!expected) {
-        printf("  ERROR: Failed to allocate memory for verification buffer.\n");
-        return 0;
-    }
-    
-    // Generate the expected data pattern based on the transfer number seed
-    generate_test_data(expected, size, (uint8_t)transfer_num);
-
-    size_t errors = 0;
-    size_t first_error_offset = (size_t)-1;
-
-    for (size_t i = 0; i < size; ++i) {
-        if (expected[i] != actual[i]) {
-            if (errors == 0) {
-                first_error_offset = i;
-            }
-            errors++;
-        }
-    }
-
-    double percentage = 100.0 * (double)(size - errors) / (double)size;
-    printf("  Verification Result: %.2f%% matched. %zu bytes transferred, %zu errors found.\n", percentage, size, errors);
-    
-    printf("  First 8 bytes received: ");
-    for(int k=0; k<8; ++k) {
-        printf("%02X ", actual[k]);
-    }
-    printf("\n");
-
-    int success = 1;
-    if (errors > 0) {
-        printf("  ERROR: First mismatch at offset 0x%zX! Expected: 0x%02X, Got: 0x%02X\n", 
-               first_error_offset, expected[first_error_offset], actual[first_error_offset]);
-        success = 0;
-    } else {
-        printf("  SUCCESS: Data integrity verified for this transfer.\n");
-    }
-    
-    free(expected);
-    return success;
-}
+// --- Helper Functions (declarations) ---
+static int get_uio_device_number(const char *id);
+void reset_interrupt_state(CoreAXI4DMAController_Regs_t* dma_regs, int dma_uio_fd);
+int verify_stream_data(uint8_t* actual, size_t size, int transfer_num);
+void print_debug_state(CoreAXI4DMAController_Regs_t* dma_regs, AxiStreamGen_Regs_t* stream_gen, DmaStreamDescriptor_t* desc);
 
 
 void run_stream_ping_pong(CoreAXI4DMAController_Regs_t* dma_regs, int dma_uio_fd, int mem_fd) {
@@ -172,10 +102,10 @@ void run_stream_ping_pong(CoreAXI4DMAController_Regs_t* dma_regs, int dma_uio_fd
     reset_interrupt_state(dma_regs, dma_uio_fd);
 
     DmaStreamDescriptor_t *desc_region_vaddr = NULL;
-    uint8_t *dest_bufs[NUM_STREAM_BUFFERS];
+    AxiStreamGen_Regs_t *stream_gen_vaddr = NULL;
+    void* stream_gen_map_base = NULL;
+    uint8_t *dest_bufs[NUM_STREAM_BUFFERS] = {NULL};
     
-    // Since the memory is non-cacheable, we don't need to page-align the mmap length for msync.
-    // We can just map the actual size needed. The kernel handles page granularity internally.
     size_t actual_desc_size = NUM_STREAM_BUFFERS * sizeof(DmaStreamDescriptor_t);
 
     desc_region_vaddr = mmap(NULL, actual_desc_size, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, STREAM_DESCRIPTOR_BASE);
@@ -187,81 +117,82 @@ void run_stream_ping_pong(CoreAXI4DMAController_Regs_t* dma_regs, int dma_uio_fd
     printf("  Mapping %d destination buffers and preparing descriptors in DDR...\n", NUM_STREAM_BUFFERS);
     for (int i = 0; i < NUM_STREAM_BUFFERS; ++i) {
         dest_bufs[i] = mmap(NULL, STREAM_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, STREAM_DEST_BASE + (i * STREAM_BUFFER_SIZE));
-        if (dest_bufs[i] == MAP_FAILED) { 
-            perror("Failed to mmap stream destination buffer"); 
-            munmap(desc_region_vaddr, actual_desc_size); 
-            // Unmap any previously mapped buffers
-            for(int j = 0; j < i; j++) munmap(dest_bufs[j], STREAM_BUFFER_SIZE);
-            return; 
+        if (dest_bufs[i] == MAP_FAILED) {
+            perror("Failed to mmap stream destination buffer");
+            goto cleanup;
         }
-        memset(dest_bufs[i], 0, STREAM_BUFFER_SIZE); // Clear destination buffers
+        memset(dest_bufs[i], 0, STREAM_BUFFER_SIZE);
 
         DmaStreamDescriptor_t* current_desc = desc_region_vaddr + i;
         current_desc->DEST_ADDR_REG = STREAM_DEST_BASE + (i * STREAM_BUFFER_SIZE);
         current_desc->BYTE_COUNT_REG = STREAM_BUFFER_SIZE;
-        current_desc->CONFIG_REG = STREAM_CONF_BASE | STREAM_FLAG_VALID | STREAM_FLAG_DEST_RDY;
+        current_desc->CONFIG_REG = STREAM_CONF_BASE | STREAM_FLAG_DEST_RDY;
     }
-    
-    // msync() is not needed because the memory region is non-cacheable.
-    // Writes from the CPU go directly to DDR.
 
+    // --- Start the Hardware Stream Generator ---
+    printf("  Configuring and starting the hardware AXI4-Stream generator...\n");
+    stream_gen_map_base = mmap(NULL, MAP_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, AXI_STREAM_GEN_BASE & ~(MAP_SIZE - 1));
+    if (stream_gen_map_base == MAP_FAILED) {
+        perror("Failed to mmap stream generator registers");
+        goto cleanup;
+    }
+    stream_gen_vaddr = (AxiStreamGen_Regs_t*)((uint8_t*)stream_gen_map_base + (AXI_STREAM_GEN_BASE & (MAP_SIZE - 1)));
+
+    printf("    - Writing 0x%X to TRANS_SIZE_REG\n", STREAM_BUFFER_SIZE);
+    stream_gen_vaddr->TRANS_SIZE_REG = STREAM_BUFFER_SIZE;
+
+    printf("    - Writing 1 to RESET_GENERATOR_REG (to de-assert reset)\n");
+    stream_gen_vaddr->RESET_GENERATOR_REG = 1;
+
+    printf("    - Writing 1 to START_REG\n");
+    stream_gen_vaddr->START_REG = 1;
+
+    // --- Main Test Loop ---
     dma_regs->INTR_0_MASK_REG = FDMA_IRQ_MASK_ALL;
-    int next_dma_desc_idx = 0;
+    int current_desc_idx = 0;
     int transfers_completed = 0;
+    int all_passed = 1;
 
     printf("\n*****************************************************************\n");
-    printf("  System configured for continuous stream reception.\n");
-    printf("  Please initiate the AXI4-Stream transfer from your hardware now.\n");
-    printf("  Expecting %d transfers of %ld KB each.\n", NUM_STREAM_TRANSFERS, STREAM_BUFFER_SIZE / 1024);
+    printf("  System configured. Waiting for %d transfers of %ld KB each.\n", NUM_STREAM_TRANSFERS, STREAM_BUFFER_SIZE / 1024);
     printf("*****************************************************************\n\n");
 
-    // Point the DMA controller to the first descriptor in DDR
-    dma_regs->STREAM_ADDR_REG[0] = STREAM_DESCRIPTOR_BASE + (next_dma_desc_idx * sizeof(DmaStreamDescriptor_t));
+    dma_regs->STREAM_ADDR_REG[0] = STREAM_DESCRIPTOR_BASE;
+    
+    // --- NEW: Print debug state before waiting ---
+    print_debug_state(dma_regs, stream_gen_vaddr, &desc_region_vaddr[0]);
     
     while(transfers_completed < NUM_STREAM_TRANSFERS) {
-        uint32_t irq_count;
-        printf("Waiting for interrupt for transfer %d (buffer %d)...\n", transfers_completed, next_dma_desc_idx);
+        printf("\nWaiting for interrupt for transfer %d (buffer %d)...\n", transfers_completed, current_desc_idx);
         
-        // Block until the UIO interrupt is received
+        uint32_t irq_count;
         ssize_t ret = read(dma_uio_fd, &irq_count, sizeof(irq_count));
         if (ret != sizeof(irq_count)) {
             perror("Interrupt read failed");
             break;
         }
 
-        int completed_idx = next_dma_desc_idx;
-        printf("  Interrupt received for Buffer %d.\n", completed_idx);
-        
+        printf("  Interrupt received for Buffer %d.\n", current_desc_idx);
         dma_regs->INTR_0_CLEAR_REG = FDMA_IRQ_CLEAR_ALL;
+
+        int next_desc_idx = (current_desc_idx + 1) % NUM_STREAM_BUFFERS;
+        dma_regs->STREAM_ADDR_REG[0] = STREAM_DESCRIPTOR_BASE + (next_desc_idx * sizeof(DmaStreamDescriptor_t));
         
-        // Re-arm for the next transfer
-        if (transfers_completed < NUM_STREAM_TRANSFERS - 1) {
-            next_dma_desc_idx = (next_dma_desc_idx + 1) % NUM_STREAM_BUFFERS;
-            dma_regs->STREAM_ADDR_REG[0] = STREAM_DESCRIPTOR_BASE + (next_dma_desc_idx * sizeof(DmaStreamDescriptor_t));
-            
-            // Re-enable the UIO interrupt so we can wait for the next one
-            uint32_t irq_enable = 1;
-            write(dma_uio_fd, &irq_enable, sizeof(irq_enable));
-        }
-        transfers_completed++;
-    }
-
-    // Stop the DMA controller from generating more interrupts
-    dma_regs->INTR_0_MASK_REG = 0;
-    printf("\nAll %d transfers complete. Verifying data integrity...\n", NUM_STREAM_TRANSFERS);
-
-    // --- Verification Step ---
-    // msync() is not needed before verification because the memory is non-cacheable.
-    // The CPU will read the fresh data directly from DDR.
-    int all_passed = 1;
-    for (int i = 0; i < NUM_STREAM_BUFFERS; i++) {
-        // The test assumes the N transfers fill the buffers cyclically.
-        // We verify the data from the LAST time each buffer was filled.
-        int last_transfer_for_this_buffer = (NUM_STREAM_TRANSFERS - NUM_STREAM_BUFFERS) + i;
-        if (!verify_stream_data(dest_bufs[i], STREAM_BUFFER_SIZE, last_transfer_for_this_buffer)) {
+        if (!verify_stream_data(dest_bufs[current_desc_idx], STREAM_BUFFER_SIZE, transfers_completed)) {
             all_passed = 0;
         }
+        
+        (desc_region_vaddr + current_desc_idx)->CONFIG_REG |= STREAM_FLAG_DEST_RDY;
+        
+        uint32_t irq_enable = 1;
+        write(dma_uio_fd, &irq_enable, sizeof(irq_enable));
+        
+        transfers_completed++;
+        current_desc_idx = next_desc_idx;
     }
+
+    dma_regs->INTR_0_MASK_REG = 0;
+    printf("\nAll %d transfers complete.\n", transfers_completed);
 
     if(all_passed) {
         printf("\n***** AXI-Stream Ping-Pong Test PASSED *****\n");
@@ -269,10 +200,15 @@ void run_stream_ping_pong(CoreAXI4DMAController_Regs_t* dma_regs, int dma_uio_fd
         printf("\n***** AXI-Stream Ping-Pong Test FAILED *****\n");
     }
 
-// Cleanup is handled by the regular return path
-    munmap(desc_region_vaddr, actual_desc_size);
+cleanup:
+    if (stream_gen_vaddr) {
+        stream_gen_vaddr->START_REG = 0;
+        stream_gen_vaddr->RESET_GENERATOR_REG = 0;
+    }
+    if (stream_gen_map_base) munmap(stream_gen_map_base, MAP_SIZE);
+    if (desc_region_vaddr) munmap(desc_region_vaddr, actual_desc_size);
     for (int i = 0; i < NUM_STREAM_BUFFERS; ++i) {
-        if(dest_bufs[i] != MAP_FAILED) munmap(dest_bufs[i], STREAM_BUFFER_SIZE);
+        if(dest_bufs[i] && dest_bufs[i] != MAP_FAILED) munmap(dest_bufs[i], STREAM_BUFFER_SIZE);
     }
 }
 
@@ -301,7 +237,6 @@ int main(void) {
     dma_regs = mmap(NULL, MAP_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, dma_uio_fd, 0);
     if (dma_regs == MAP_FAILED) { perror("Fatal: Failed to mmap UIO device"); close(dma_uio_fd); return 1; }
 
-    // Open /dev/mem WITHOUT O_SYNC.
     mem_fd = open("/dev/mem", O_RDWR);
     if (mem_fd < 0) { perror("Fatal: Failed to open /dev/mem"); munmap(dma_regs, MAP_SIZE); close(dma_uio_fd); return 1; }
 
@@ -315,4 +250,87 @@ int main(void) {
     printf("\nExiting.\n");
 
     return 0;
+}
+
+// --- Helper Function (definitions) ---
+
+void print_debug_state(CoreAXI4DMAController_Regs_t* dma_regs, AxiStreamGen_Regs_t* stream_gen, DmaStreamDescriptor_t* desc) {
+    printf("\n--- PRE-WAIT HARDWARE STATE DUMP ---\n");
+
+    // 1. Check Stream Generator State
+    printf("[Stream Generator @ 0x%lX]\n", AXI_STREAM_GEN_BASE);
+    printf("  - Read back TRANS_SIZE_REG   (0x00): 0x%08X\n", stream_gen->TRANS_SIZE_REG);
+    printf("  - Read back START_REG        (0x04): 0x%08X\n", stream_gen->START_REG);
+    printf("  - Read back RESET_GENERATOR_REG(0x08): 0x%08X\n", stream_gen->RESET_GENERATOR_REG);
+
+    // 2. Check DMA Controller State
+    printf("[DMA Controller @ 0x%lX]\n", (uintptr_t)dma_regs);
+    printf("  - INTR_0_MASK_REG (0x14): 0x%08X\n", dma_regs->INTR_0_MASK_REG);
+    printf("  - STREAM_ADDR_REG[0](0x460): 0x%08X\n", dma_regs->STREAM_ADDR_REG[0]);
+    printf("  - INTR_0_STAT_REG (0x10): 0x%08X\n", dma_regs->INTR_0_STAT_REG);
+
+    // 3. Check First Descriptor in Memory
+    printf("[First Descriptor in DDR @ 0x%lX]\n", STREAM_DESCRIPTOR_BASE);
+    printf("  - CONFIG_REG      (0x00): 0x%08X\n", desc->CONFIG_REG);
+    printf("  - BYTE_COUNT_REG  (0x04): 0x%08X\n", desc->BYTE_COUNT_REG);
+    printf("  - DEST_ADDR_REG   (0x08): 0x%08X\n", desc->DEST_ADDR_REG);
+    
+    printf("------------------------------------\n");
+}
+
+static int get_uio_device_number(const char *id) {
+    FILE *fp; int i; char file_id[ID_STR_LEN]; char sysfs_path[SYSFS_PATH_LEN];
+    for (i = 0; i < NUM_UIO_DEVICES; i++) {
+        snprintf(sysfs_path, SYSFS_PATH_LEN, "/sys/class/uio/uio%d/name", i);
+        fp = fopen(sysfs_path, "r"); if (fp == NULL) break;
+        fscanf(fp, "%31s", file_id); fclose(fp);
+        if (strncmp(file_id, id, strlen(id)) == 0) return i;
+    }
+    return -1;
+}
+
+void reset_interrupt_state(CoreAXI4DMAController_Regs_t* dma_regs, int dma_uio_fd) {
+    dma_regs->INTR_0_MASK_REG = 0;
+    dma_regs->INTR_0_CLEAR_REG = FDMA_IRQ_CLEAR_ALL;
+    uint32_t dummy_irq_count;
+    int flags = fcntl(dma_uio_fd, F_GETFL, 0);
+    fcntl(dma_uio_fd, F_SETFL, flags | O_NONBLOCK);
+    read(dma_uio_fd, &dummy_irq_count, sizeof(dummy_irq_count));
+    fcntl(dma_uio_fd, F_SETFL, flags);
+    uint32_t irq_enable = 1;
+    write(dma_uio_fd, &irq_enable, sizeof(irq_enable));
+}
+
+int verify_stream_data(uint8_t* actual, size_t size, int transfer_num) {
+    printf("\n--- Verifying transfer %d ---\n", transfer_num);
+    uint8_t* expected = malloc(size);
+    if (!expected) {
+        printf("  ERROR: Failed to allocate memory for verification buffer.\n");
+        return 0;
+    }
+    // This is a placeholder for generating expected data.
+    memset(expected, (uint8_t)transfer_num, size);
+    size_t errors = 0;
+    size_t first_error_offset = (size_t)-1;
+    for (size_t i = 0; i < size; ++i) {
+        if (expected[i] != actual[i]) {
+            if (errors == 0) first_error_offset = i;
+            errors++;
+        }
+    }
+    double percentage = 100.0 * (double)(size - errors) / (double)size;
+    printf("  Verification Result: %.2f%% matched. %zu bytes transferred, %zu errors found.\n", percentage, size, errors);
+    printf("  First 8 bytes received: ");
+    for(int k=0; k<8; ++k) printf("%02X ", actual[k]);
+    printf("\n");
+    if (errors > 0) {
+        printf("  ERROR: First mismatch at offset 0x%zX! Expected: 0x%02X, Got: 0x%02X\n", 
+               first_error_offset, expected[first_error_offset], actual[first_error_offset]);
+        free(expected);
+        return 0;
+    } else {
+        printf("  SUCCESS: Data integrity verified for this transfer.\n");
+    }
+    free(expected);
+    return 1;
 }
