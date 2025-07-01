@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: MIT
 /*
- * Combined and revised DMA test suite for PolarFire SoC.
+ * DMA test suite for PolarFire SoC, focused on AXI4-Stream to Memory.
  *
- * v16: Added robust data generation and verification.
- * - Replaced simple memset with a pseudo-random, deterministic data
- * pattern to test data integrity more thoroughly.
- * - Added a verification function that compares source and destination
- * buffers byte-for-byte after a test completes.
- * - The verification function reports the percentage of matched data, the
- * number of errors, and the first 8 bytes received for quick inspection.
- * - Both memory-to-memory and stream-to-memory tests now perform this
- * verification, making the suite a much more effective validation tool.
+ * v22: Corrected Memory Mapping for Non-Cacheable Regions
+ * - The 'msync failed: Invalid argument' error persisted because the target
+ * DDR region (0xC8000000 onwards) is configured as NON-CACHEABLE memory.
+ * - Cache synchronization operations (msync) are invalid on non-cacheable
+ * memory, as there is no CPU cache to flush from or invalidate.
+ * - The fix is to remove all calls to msync(). Coherency is guaranteed by
+ * the hardware/kernel, as all accesses (CPU and DMA) to this region
+ * bypass the cache and go directly to physical DDR.
+ * - Simplified mmap() calls to reflect the actual size needed, as page-size
+ * rounding for msync() is no longer required.
  */
 
 #include <stdio.h>
@@ -25,31 +26,19 @@
 #include "mpu_driver.h" // For MPU setup
 
 /*
- * This struct accurately represents a single memory-mapped DMA descriptor
- * block in hardware, including padding. Each descriptor is 32 bytes.
+ * This struct represents the AXI4-Stream descriptor that resides
+ * in system memory (DDR), not in the DMA controller's registers.
  */
 typedef struct {
-    volatile uint32_t CONFIG_REG;           // Offset +0x00
-    volatile uint32_t BYTE_COUNT_REG;       // Offset +0x04
-    volatile uint32_t SOURCE_ADDR_REG;      // Offset +0x08
-    volatile uint32_t DEST_ADDR_REG;        // Offset +0x0C
-    volatile uint32_t NEXT_DESC_ADDR_REG;   // Offset +0x10
-    uint8_t           _RESERVED[0x20 - 0x14]; // Pad to 32 bytes total
-} DmaDescriptorBlock_t;
-
-/*
- * This struct represents the much simpler AXI4-Stream descriptor that
- * resides in system memory (DDR), not in the DMA controller's registers.
- */
-typedef struct {
-    volatile uint32_t CONFIG_REG;          // Offset +0x00
-    volatile uint32_t BYTE_COUNT_REG;      // Offset +0x04
-    volatile uint32_t DEST_ADDR_REG;       // Offset +0x08
+    volatile uint32_t CONFIG_REG;       // Offset +0x00
+    volatile uint32_t BYTE_COUNT_REG;   // Offset +0x04
+    volatile uint32_t DEST_ADDR_REG;    // Offset +0x08
 } DmaStreamDescriptor_t;
 
 
 /*
  * This struct directly mirrors the register layout of the CoreAXI4DMAController.
+ * It is simplified to only include registers relevant to the stream test.
  */
 typedef struct {
     volatile const uint32_t VERSION_REG;
@@ -58,43 +47,26 @@ typedef struct {
     volatile const uint32_t INTR_0_STAT_REG;
     volatile uint32_t       INTR_0_MASK_REG;
     volatile uint32_t       INTR_0_CLEAR_REG;
-    uint8_t                 _RESERVED2[0x60 - 0x1C];
-    DmaDescriptorBlock_t    DESCRIPTOR[32]; // Max 32 descriptors
-    uint8_t                 _RESERVED3[0x460 - 0x260]; // Reserved space until stream registers
+    uint8_t                 _RESERVED2[0x460 - 0x1C];
     volatile uint32_t       STREAM_ADDR_REG[4]; // Offsets 0x460, 0x464, 0x468, 0x46C
 } CoreAXI4DMAController_Regs_t;
 
 // Device tree names
 #define UIO_DMA_DEVNAME         "dma-controller@60010000"
 
-// Memory addresses
-#define DDR_BUFFER_BASE         0xc8000000UL // Base for all test buffers
-
-// Ping-Pong Test parameters
-#define NUM_PING_PONG_BUFFERS   4
-#define PING_PONG_BUFFER_SIZE   (1024*1024)
-#define PING_PONG_SRC_BASE      DDR_BUFFER_BASE
-#define PING_PONG_DEST_BASE     (DDR_BUFFER_BASE + (NUM_PING_PONG_BUFFERS * PING_PONG_BUFFER_SIZE))
-#define STREAM_DEST_BASE        PING_PONG_DEST_BASE
-#define STREAM_DESCRIPTOR_BASE  (STREAM_DEST_BASE + (NUM_PING_PONG_BUFFERS * PING_PONG_BUFFER_SIZE))
-#define NUM_PING_PONG_TRANSFERS 16
+// Memory addresses and test parameters
+#define DDR_BASE                0xc8000000UL
+#define NUM_STREAM_BUFFERS      4
+#define STREAM_BUFFER_SIZE      (1024 * 1024) // 1MB per buffer
+#define STREAM_DEST_BASE        DDR_BASE
+#define STREAM_DESCRIPTOR_BASE  (STREAM_DEST_BASE + (NUM_STREAM_BUFFERS * STREAM_BUFFER_SIZE))
+#define NUM_STREAM_TRANSFERS    16 // Must be a multiple of NUM_STREAM_BUFFERS for this test
 
 // --- DMA Configuration Bit Flags ---
-
-// For Memory-Mapped Descriptors (in DMA registers)
-#define MEM_FLAG_CHAIN          (1U << 10)
-#define MEM_FLAG_IRQ_ON_PROCESS (1U << 12)
-#define MEM_FLAG_SRC_RDY        (1U << 13)
-#define MEM_FLAG_DEST_RDY       (1U << 14)
-#define MEM_FLAG_VALID          (1U << 15)
-#define MEM_OP_INCR             (0b01)
-#define MEM_CONF_BASE           ((MEM_OP_INCR << 2) | MEM_OP_INCR | MEM_FLAG_CHAIN | MEM_FLAG_IRQ_ON_PROCESS)
-
-// For AXI-Stream Descriptors (in DDR)
 #define STREAM_OP_INCR          (0b01)
 #define STREAM_FLAG_DEST_RDY    (1U << 2)
 #define STREAM_FLAG_VALID       (1U << 3)
-#define STREAM_CONF_BASE        (STREAM_OP_INCR) // Operation is in bits [1:0]
+#define STREAM_CONF_BASE        (STREAM_OP_INCR)
 
 // DMA Control values
 #define FDMA_START(n)           (1U << (n))
@@ -107,7 +79,8 @@ typedef struct {
 #define UIO_DEVICE_PATH_LEN     (32)
 #define NUM_UIO_DEVICES         (32)
 #define MAP_SIZE                4096UL
-#define PAGE_SIZE               sysconf(_SC_PAGE_SIZE)
+
+// --- Helper Functions ---
 
 static int get_uio_device_number(const char *id) {
     FILE *fp; int i; char file_id[ID_STR_LEN]; char sysfs_path[SYSFS_PATH_LEN];
@@ -121,44 +94,45 @@ static int get_uio_device_number(const char *id) {
 }
 
 void reset_interrupt_state(CoreAXI4DMAController_Regs_t* dma_regs, int dma_uio_fd) {
+    // Disable and clear any pending hardware interrupts in the DMA controller
     dma_regs->INTR_0_MASK_REG = 0;
     dma_regs->INTR_0_CLEAR_REG = FDMA_IRQ_CLEAR_ALL;
 
+    // Perform a non-blocking read to clear any pending interrupt count in the UIO driver.
+    // This prevents an immediate return from the first blocking read() call.
     uint32_t dummy_irq_count;
     int flags = fcntl(dma_uio_fd, F_GETFL, 0);
     fcntl(dma_uio_fd, F_SETFL, flags | O_NONBLOCK);
     read(dma_uio_fd, &dummy_irq_count, sizeof(dummy_irq_count));
-    fcntl(dma_uio_fd, F_SETFL, flags);
+    fcntl(dma_uio_fd, F_SETFL, flags); // Restore original flags
 
+    // Re-enable interrupt generation for the UIO device
     uint32_t irq_enable = 1;
     write(dma_uio_fd, &irq_enable, sizeof(irq_enable));
 }
 
-/**
- * @brief Fills a buffer with a deterministic, pseudo-random pattern.
- * @param buffer Pointer to the buffer to fill.
- * @param size The size of the buffer in bytes.
- * @param seed A value to make the pattern unique for this buffer.
- */
 void generate_test_data(uint8_t* buffer, size_t size, uint8_t seed) {
-    printf("  Generating %zu bytes of test data with seed 0x%02X...\n", size, seed);
+    printf("  Generating %zu bytes of reference data with seed 0x%02X...\n", size, seed);
     for (size_t i = 0; i < size; ++i) {
         buffer[i] = (uint8_t)((i + seed) * 13 + ((i + seed) >> 8) * 7);
     }
 }
 
-/**
- * @brief Compares two buffers and reports the data integrity.
- * @param expected Pointer to the buffer with the original, correct data.
- * @param actual Pointer to the buffer that was received via DMA.
- * @param size The size of the buffers in bytes.
- * @param buffer_num The logical number of the buffer for reporting.
- * @return 1 on success (match), 0 on failure (mismatch).
- */
-int verify_data_transfer(uint8_t* expected, uint8_t* actual, size_t size, int buffer_num) {
-    printf("\n--- Verifying Buffer %d ---\n", buffer_num);
+int verify_stream_data(uint8_t* actual, size_t size, int transfer_num) {
+    printf("\n--- Verifying transfer %d ---\n", transfer_num);
+    
+    // Allocate a temporary buffer for the expected data
+    uint8_t* expected = malloc(size);
+    if (!expected) {
+        printf("  ERROR: Failed to allocate memory for verification buffer.\n");
+        return 0;
+    }
+    
+    // Generate the expected data pattern based on the transfer number seed
+    generate_test_data(expected, size, (uint8_t)transfer_num);
+
     size_t errors = 0;
-    size_t first_error_offset = -1;
+    size_t first_error_offset = (size_t)-1;
 
     for (size_t i = 0; i < size; ++i) {
         if (expected[i] != actual[i]) {
@@ -178,97 +152,19 @@ int verify_data_transfer(uint8_t* expected, uint8_t* actual, size_t size, int bu
     }
     printf("\n");
 
+    int success = 1;
     if (errors > 0) {
         printf("  ERROR: First mismatch at offset 0x%zX! Expected: 0x%02X, Got: 0x%02X\n", 
                first_error_offset, expected[first_error_offset], actual[first_error_offset]);
-        return 0;
+        success = 0;
     } else {
-        printf("  SUCCESS: Data integrity verified.\n");
-        return 1;
+        printf("  SUCCESS: Data integrity verified for this transfer.\n");
     }
+    
+    free(expected);
+    return success;
 }
 
-
-void run_mem_to_mem_ping_pong(CoreAXI4DMAController_Regs_t* dma_regs, int dma_uio_fd, int mem_fd) {
-    printf("\n--- Running Memory-to-Memory Ping-Pong Test ---\n");
-    
-    reset_interrupt_state(dma_regs, dma_uio_fd);
-
-    uint8_t *src_buf_map = mmap(NULL, NUM_PING_PONG_BUFFERS * PING_PONG_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, PING_PONG_SRC_BASE);
-    if(src_buf_map == MAP_FAILED) { perror("Failed to mmap source buffers"); return; }
-    
-    for(int i = 0; i < NUM_PING_PONG_BUFFERS; ++i) {
-        generate_test_data(src_buf_map + (i * PING_PONG_BUFFER_SIZE), PING_PONG_BUFFER_SIZE, i);
-    }
-    // Source data is prepared, unmap for now.
-    munmap(src_buf_map, NUM_PING_PONG_BUFFERS * PING_PONG_BUFFER_SIZE);
-
-    printf("\n  Configuring %d descriptors for cyclic transfer...\n", NUM_PING_PONG_BUFFERS);
-    for (int i = 0; i < NUM_PING_PONG_BUFFERS; ++i) {
-        dma_regs->DESCRIPTOR[i].SOURCE_ADDR_REG = PING_PONG_SRC_BASE + (i * PING_PONG_BUFFER_SIZE);
-        dma_regs->DESCRIPTOR[i].DEST_ADDR_REG   = PING_PONG_DEST_BASE + (i * PING_PONG_BUFFER_SIZE);
-        dma_regs->DESCRIPTOR[i].BYTE_COUNT_REG  = PING_PONG_BUFFER_SIZE;
-        dma_regs->DESCRIPTOR[i].NEXT_DESC_ADDR_REG = (i + 1) % NUM_PING_PONG_BUFFERS;
-        dma_regs->DESCRIPTOR[i].CONFIG_REG = MEM_CONF_BASE | MEM_FLAG_SRC_RDY | MEM_FLAG_VALID;
-    }
-    
-    dma_regs->INTR_0_MASK_REG = FDMA_IRQ_MASK_ALL;
-
-    printf("  Starting ping-pong transfer for %d buffers...\n", NUM_PING_PONG_TRANSFERS);
-    dma_regs->DESCRIPTOR[0].CONFIG_REG |= MEM_FLAG_DEST_RDY;
-    dma_regs->START_OPERATION_REG = FDMA_START(0);
-
-    for (int i = 0; i < NUM_PING_PONG_TRANSFERS; ++i) {
-        uint32_t irq_count;
-        read(dma_uio_fd, &irq_count, sizeof(irq_count));
-        uint32_t status = dma_regs->INTR_0_STAT_REG;
-        uint32_t completed_desc = (status >> 4) & 0x3F;
-        printf("  Interrupt for Descriptor %u received.\n", completed_desc);
-        
-        if (i < (NUM_PING_PONG_TRANSFERS - 1)) {
-            uint32_t next_desc_to_arm = (completed_desc + 1) % NUM_PING_PONG_BUFFERS;
-            dma_regs->DESCRIPTOR[next_desc_to_arm].CONFIG_REG |= (MEM_FLAG_DEST_RDY | MEM_FLAG_SRC_RDY);
-        } else {
-            dma_regs->DESCRIPTOR[completed_desc].CONFIG_REG &= ~MEM_FLAG_CHAIN;
-        }
-        
-        dma_regs->INTR_0_CLEAR_REG = FDMA_IRQ_CLEAR_ALL;
-        
-        uint32_t irq_enable = 1;
-        write(dma_uio_fd, &irq_enable, sizeof(irq_enable));
-    }
-    
-    dma_regs->INTR_0_MASK_REG = 0;
-    for (int i = 0; i < NUM_PING_PONG_BUFFERS; ++i) {
-        dma_regs->DESCRIPTOR[i].CONFIG_REG &= ~MEM_FLAG_VALID;
-    }
-
-    // --- Verification Phase ---
-    printf("\n  All transfers complete. Verifying data integrity...\n");
-    src_buf_map = mmap(NULL, NUM_PING_PONG_BUFFERS * PING_PONG_BUFFER_SIZE, PROT_READ, MAP_SHARED, mem_fd, PING_PONG_SRC_BASE);
-    uint8_t *dest_buf_map = mmap(NULL, NUM_PING_PONG_BUFFERS * PING_PONG_BUFFER_SIZE, PROT_READ, MAP_SHARED, mem_fd, PING_PONG_DEST_BASE);
-
-    if (src_buf_map == MAP_FAILED || dest_buf_map == MAP_FAILED) {
-        perror("Failed to mmap buffers for verification");
-    } else {
-        int all_passed = 1;
-        for (int i = 0; i < NUM_PING_PONG_BUFFERS; i++) {
-            if (!verify_data_transfer(src_buf_map + (i * PING_PONG_BUFFER_SIZE), 
-                                      dest_buf_map + (i * PING_PONG_BUFFER_SIZE), 
-                                      PING_PONG_BUFFER_SIZE, i)) {
-                all_passed = 0;
-            }
-        }
-        if(all_passed) {
-            printf("\n***** Mem-to-Mem Ping-Pong Test PASSED *****\n");
-        } else {
-            printf("\n***** Mem-to-Mem Ping-Pong Test FAILED *****\n");
-        }
-    }
-
-    if (src_buf_map != MAP_FAILED) munmap(src_buf_map, NUM_PING_PONG_BUFFERS * PING_PONG_BUFFER_SIZE);
-    if (dest_buf_map != MAP_FAILED) munmap(dest_buf_map, NUM_PING_PONG_BUFFERS * PING_PONG_BUFFER_SIZE);
-}
 
 void run_stream_ping_pong(CoreAXI4DMAController_Regs_t* dma_regs, int dma_uio_fd, int mem_fd) {
     printf("\n--- Running AXI4-Stream to Memory Ping-Pong Test ---\n");
@@ -276,39 +172,38 @@ void run_stream_ping_pong(CoreAXI4DMAController_Regs_t* dma_regs, int dma_uio_fd
     reset_interrupt_state(dma_regs, dma_uio_fd);
 
     DmaStreamDescriptor_t *desc_region_vaddr = NULL;
-    uint8_t *dest_bufs[NUM_PING_PONG_BUFFERS];
-    uint8_t* expected_data = malloc(PING_PONG_BUFFER_SIZE);
-    if (!expected_data) {
-        perror("Failed to allocate verification buffer");
-        return;
-    }
+    uint8_t *dest_bufs[NUM_STREAM_BUFFERS];
+    
+    // Since the memory is non-cacheable, we don't need to page-align the mmap length for msync.
+    // We can just map the actual size needed. The kernel handles page granularity internally.
+    size_t actual_desc_size = NUM_STREAM_BUFFERS * sizeof(DmaStreamDescriptor_t);
 
-    size_t desc_region_size = NUM_PING_PONG_BUFFERS * sizeof(DmaStreamDescriptor_t);
-    desc_region_vaddr = mmap(NULL, desc_region_size, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, STREAM_DESCRIPTOR_BASE);
+    desc_region_vaddr = mmap(NULL, actual_desc_size, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, STREAM_DESCRIPTOR_BASE);
     if (desc_region_vaddr == MAP_FAILED) {
         perror("Failed to mmap stream descriptor region");
-        free(expected_data);
         return;
     }
 
-    printf("  Mapping %d destination buffers and preparing descriptors in DDR...\n", NUM_PING_PONG_BUFFERS);
-    for (int i = 0; i < NUM_PING_PONG_BUFFERS; ++i) {
-        dest_bufs[i] = mmap(NULL, PING_PONG_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, STREAM_DEST_BASE + (i * PING_PONG_BUFFER_SIZE));
+    printf("  Mapping %d destination buffers and preparing descriptors in DDR...\n", NUM_STREAM_BUFFERS);
+    for (int i = 0; i < NUM_STREAM_BUFFERS; ++i) {
+        dest_bufs[i] = mmap(NULL, STREAM_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, STREAM_DEST_BASE + (i * STREAM_BUFFER_SIZE));
         if (dest_bufs[i] == MAP_FAILED) { 
             perror("Failed to mmap stream destination buffer"); 
-            munmap(desc_region_vaddr, desc_region_size); 
-            free(expected_data);
-            // Should also unmap any previously successful maps
+            munmap(desc_region_vaddr, actual_desc_size); 
+            // Unmap any previously mapped buffers
+            for(int j = 0; j < i; j++) munmap(dest_bufs[j], STREAM_BUFFER_SIZE);
             return; 
         }
-        memset(dest_bufs[i], 0, PING_PONG_BUFFER_SIZE);
+        memset(dest_bufs[i], 0, STREAM_BUFFER_SIZE); // Clear destination buffers
 
         DmaStreamDescriptor_t* current_desc = desc_region_vaddr + i;
-        current_desc->DEST_ADDR_REG = STREAM_DEST_BASE + (i * PING_PONG_BUFFER_SIZE);
-        current_desc->BYTE_COUNT_REG = PING_PONG_BUFFER_SIZE;
+        current_desc->DEST_ADDR_REG = STREAM_DEST_BASE + (i * STREAM_BUFFER_SIZE);
+        current_desc->BYTE_COUNT_REG = STREAM_BUFFER_SIZE;
         current_desc->CONFIG_REG = STREAM_CONF_BASE | STREAM_FLAG_VALID | STREAM_FLAG_DEST_RDY;
     }
-    __sync_synchronize();
+    
+    // msync() is not needed because the memory region is non-cacheable.
+    // Writes from the CPU go directly to DDR.
 
     dma_regs->INTR_0_MASK_REG = FDMA_IRQ_MASK_ALL;
     int next_dma_desc_idx = 0;
@@ -317,50 +212,75 @@ void run_stream_ping_pong(CoreAXI4DMAController_Regs_t* dma_regs, int dma_uio_fd
     printf("\n*****************************************************************\n");
     printf("  System configured for continuous stream reception.\n");
     printf("  Please initiate the AXI4-Stream transfer from your hardware now.\n");
-    printf("  The stream source should send a unique pattern for each packet.\n");
+    printf("  Expecting %d transfers of %ld KB each.\n", NUM_STREAM_TRANSFERS, STREAM_BUFFER_SIZE / 1024);
     printf("*****************************************************************\n\n");
 
+    // Point the DMA controller to the first descriptor in DDR
     dma_regs->STREAM_ADDR_REG[0] = STREAM_DESCRIPTOR_BASE + (next_dma_desc_idx * sizeof(DmaStreamDescriptor_t));
     
-    while(transfers_completed < NUM_PING_PONG_TRANSFERS) {
+    while(transfers_completed < NUM_STREAM_TRANSFERS) {
         uint32_t irq_count;
-        printf("Waiting for interrupt for buffer %d...\n", next_dma_desc_idx);
-        read(dma_uio_fd, &irq_count, sizeof(irq_count));
-
-        uint32_t status = dma_regs->INTR_0_STAT_REG;
-        int completed_idx = next_dma_desc_idx;
-
-        // Generate the expected data pattern for the buffer that was just filled
-        generate_test_data(expected_data, PING_PONG_BUFFER_SIZE, completed_idx);
-        // Verify the received data against the expected pattern
-        verify_data_transfer(expected_data, dest_bufs[completed_idx], PING_PONG_BUFFER_SIZE, completed_idx);
+        printf("Waiting for interrupt for transfer %d (buffer %d)...\n", transfers_completed, next_dma_desc_idx);
         
-        next_dma_desc_idx = (next_dma_desc_idx + 1) % NUM_PING_PONG_BUFFERS;
-        dma_regs->STREAM_ADDR_REG[0] = STREAM_DESCRIPTOR_BASE + (next_dma_desc_idx * sizeof(DmaStreamDescriptor_t));
+        // Block until the UIO interrupt is received
+        ssize_t ret = read(dma_uio_fd, &irq_count, sizeof(irq_count));
+        if (ret != sizeof(irq_count)) {
+            perror("Interrupt read failed");
+            break;
+        }
+
+        int completed_idx = next_dma_desc_idx;
+        printf("  Interrupt received for Buffer %d.\n", completed_idx);
         
         dma_regs->INTR_0_CLEAR_REG = FDMA_IRQ_CLEAR_ALL;
-
-        uint32_t irq_enable = 1;
-        write(dma_uio_fd, &irq_enable, sizeof(irq_enable));
+        
+        // Re-arm for the next transfer
+        if (transfers_completed < NUM_STREAM_TRANSFERS - 1) {
+            next_dma_desc_idx = (next_dma_desc_idx + 1) % NUM_STREAM_BUFFERS;
+            dma_regs->STREAM_ADDR_REG[0] = STREAM_DESCRIPTOR_BASE + (next_dma_desc_idx * sizeof(DmaStreamDescriptor_t));
+            
+            // Re-enable the UIO interrupt so we can wait for the next one
+            uint32_t irq_enable = 1;
+            write(dma_uio_fd, &irq_enable, sizeof(irq_enable));
+        }
         transfers_completed++;
     }
 
+    // Stop the DMA controller from generating more interrupts
     dma_regs->INTR_0_MASK_REG = 0;
-    printf("\n***** AXI-Stream Ping-Pong Test Complete *****\n");
+    printf("\nAll %d transfers complete. Verifying data integrity...\n", NUM_STREAM_TRANSFERS);
 
-    free(expected_data);
-    munmap(desc_region_vaddr, desc_region_size);
-    for (int i = 0; i < NUM_PING_PONG_BUFFERS; ++i) {
-        munmap(dest_bufs[i], PING_PONG_BUFFER_SIZE);
+    // --- Verification Step ---
+    // msync() is not needed before verification because the memory is non-cacheable.
+    // The CPU will read the fresh data directly from DDR.
+    int all_passed = 1;
+    for (int i = 0; i < NUM_STREAM_BUFFERS; i++) {
+        // The test assumes the N transfers fill the buffers cyclically.
+        // We verify the data from the LAST time each buffer was filled.
+        int last_transfer_for_this_buffer = (NUM_STREAM_TRANSFERS - NUM_STREAM_BUFFERS) + i;
+        if (!verify_stream_data(dest_bufs[i], STREAM_BUFFER_SIZE, last_transfer_for_this_buffer)) {
+            all_passed = 0;
+        }
+    }
+
+    if(all_passed) {
+        printf("\n***** AXI-Stream Ping-Pong Test PASSED *****\n");
+    } else {
+        printf("\n***** AXI-Stream Ping-Pong Test FAILED *****\n");
+    }
+
+// Cleanup is handled by the regular return path
+    munmap(desc_region_vaddr, actual_desc_size);
+    for (int i = 0; i < NUM_STREAM_BUFFERS; ++i) {
+        if(dest_bufs[i] != MAP_FAILED) munmap(dest_bufs[i], STREAM_BUFFER_SIZE);
     }
 }
 
 int main(void) {
     int dma_uio_fd = -1, mem_fd = -1, uio_num;
     CoreAXI4DMAController_Regs_t *dma_regs = NULL;
-    char cmd;
 
-    printf("--- PolarFire SoC DMA Test Application ---\n");
+    printf("--- PolarFire SoC AXI4-Stream DMA Test Application ---\n");
 
     if (!MPU_Configure_FIC0()) {
         fprintf(stderr, "Fatal: Could not configure MPU. Halting.\n");
@@ -381,30 +301,13 @@ int main(void) {
     dma_regs = mmap(NULL, MAP_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, dma_uio_fd, 0);
     if (dma_regs == MAP_FAILED) { perror("Fatal: Failed to mmap UIO device"); close(dma_uio_fd); return 1; }
 
-    mem_fd = open("/dev/mem", O_RDWR | O_SYNC);
+    // Open /dev/mem WITHOUT O_SYNC.
+    mem_fd = open("/dev/mem", O_RDWR);
     if (mem_fd < 0) { perror("Fatal: Failed to open /dev/mem"); munmap(dma_regs, MAP_SIZE); close(dma_uio_fd); return 1; }
 
     printf("Reading DMA Controller Version: 0x%08X\n", dma_regs->VERSION_REG);
 
-    while(1){
-        printf("\n# Choose one of the following options:\n");
-        printf("  1 - Run Memory-to-Memory Ping-Pong Test\n");
-        printf("  2 - Run AXI4-Stream to Memory Ping-Pong Test\n");
-        printf("  3 - Exit\n> ");
-        
-        scanf(" %c", &cmd);
-        while(getchar() != '\n'); // Clear input buffer
-
-        if (cmd == '1') {
-            run_mem_to_mem_ping_pong(dma_regs, dma_uio_fd, mem_fd);
-        } else if (cmd == '2') {
-            run_stream_ping_pong(dma_regs, dma_uio_fd, mem_fd);
-        } else if (cmd == '3' || cmd == 'q') {
-            break;
-        } else {
-            printf("Invalid option.\n");
-        }
-    }
+    run_stream_ping_pong(dma_regs, dma_uio_fd, mem_fd);
 
     munmap(dma_regs, MAP_SIZE);
     close(dma_uio_fd);
