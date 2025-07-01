@@ -2,14 +2,17 @@
 /*
  * AXI4-Stream source for testing the PolarFire SoC DMA.
  *
- * v15: Simplified continuous stream implementation.
- * Changes from v14:
- * - Removed packet logic and WORDS_PER_PACKET parameter
- * - Made FIFO depth a localparam (16 words)
- * - Removed statistics counters
- * - m_axis_tlast is always 0 for continuous streaming
- * - Simplified module interface and internal logic
- * - Focus on core functionality: continuous byte-to-word conversion and streaming
+ * v16: Made module IO strictly AXI4-Stream compliant.
+ * Changes from v15:
+ * - Removed non-AXI status/control signals from the IO:
+ * - input_ready
+ * - fifo_full_flag
+ * - fifo_empty_flag
+ * - The module now has a purely AXI4-Stream master interface, plus the
+ * data input pins. Upstream logic must ensure data is provided at a
+ * rate the downstream AXI bus can handle, as there is no longer a
+ * backpressure signal. Data will be dropped if the input rate is
+ * too high and the internal FIFO becomes full.
  */
 module axi_stream_source (
     input  wire         aclk,
@@ -17,11 +20,6 @@ module axi_stream_source (
 
     // Data Input
     input  wire [7:0]   data_pins,
-    
-    // Control Signals
-    output wire         input_ready,
-    output wire         fifo_full_flag,   // Status signal
-    output wire         fifo_empty_flag,  // Status signal
 
     // AXI4-Stream Master Interface (Output)
     output reg          m_axis_tvalid,
@@ -35,7 +33,7 @@ module axi_stream_source (
 );
 
     // --- Parameters ---
-    localparam FIFO_DEPTH_BITS = 4;          // FIFO depth (2^4 = 16 words)
+    localparam FIFO_DEPTH_BITS = 4;              // FIFO depth (2^4 = 16 words)
     localparam FIFO_DEPTH      = 1 << FIFO_DEPTH_BITS;
 
     // --- FIFO Registers and Wires ---
@@ -44,15 +42,14 @@ module axi_stream_source (
     reg  [FIFO_DEPTH_BITS-1:0] rd_ptr;
     reg  [FIFO_DEPTH_BITS:0]   fifo_count; // One extra bit for full/empty distinction
 
-    // FIFO status signals
+    // FIFO status signals (internal)
     wire fifo_full  = (fifo_count == FIFO_DEPTH);
     wire fifo_empty = (fifo_count == 0);
-    wire fifo_almost_full = (fifo_count >= FIFO_DEPTH - 1);
-    
+
     // Control signals
     wire do_read  = m_axis_tvalid && m_axis_tready;
     wire do_write = !fifo_full && (byte_counter == 2'd3);
-    
+
     // Next state calculations for FIFO
     wire [FIFO_DEPTH_BITS:0] next_fifo_count = 
         (do_write && !do_read) ? fifo_count + 1 :
@@ -71,11 +68,8 @@ module axi_stream_source (
     assign m_axis_tid   = 8'h00;
 
     // --- Output Assignments ---
-    assign input_ready     = !fifo_full;
-    assign fifo_full_flag  = fifo_full;
-    assign fifo_empty_flag = fifo_empty;
-    assign m_axis_tdata    = fifo_mem[rd_ptr];
-    assign m_axis_tlast    = 1'b0;  // Never assert TLAST for continuous stream
+    assign m_axis_tdata = fifo_mem[rd_ptr];
+    assign m_axis_tlast = 1'b0;  // Never assert TLAST for continuous stream
 
     // --- Main Logic ---
     always @(posedge aclk) begin
@@ -84,18 +78,20 @@ module axi_stream_source (
             byte_counter     <= 2'd0;
             data_accumulator <= 24'd0;
             assembled_word   <= 32'd0;
-            
+
             // Reset FIFO
             wr_ptr           <= {FIFO_DEPTH_BITS{1'b0}};
             rd_ptr           <= {FIFO_DEPTH_BITS{1'b0}};
             fifo_count       <= {(FIFO_DEPTH_BITS+1){1'b0}};
-            
+
             // Reset AXI interface
             m_axis_tvalid    <= 1'b0;
         end else begin
             //==================================================================
             // INPUT BYTE COLLECTION AND FIFO WRITE
             //==================================================================
+            // Data is only collected from data_pins if the FIFO is not full.
+            // If the FIFO is full, input data is effectively dropped.
             if (!fifo_full) begin
                 // Advance byte counter
                 byte_counter <= byte_counter + 1;
@@ -139,8 +135,9 @@ module axi_stream_source (
             //==================================================================
             // SIMPLIFIED TVALID LOGIC
             //==================================================================
-            // TVALID should be high when there's data available to read
-            // Account for the next cycle state
+            // TVALID should be high when there's data available to read.
+            // We look at the next_fifo_count to ensure TVALID is asserted
+            // in the same cycle a word is written into a previously empty FIFO.
             if (next_fifo_count > 0) begin
                 m_axis_tvalid <= 1'b1;
             end else begin
@@ -156,16 +153,18 @@ module axi_stream_source (
     always @(posedge aclk) begin
         if (aresetn) begin
             // Check for FIFO overflow
+            // This should not be possible due to the 'if (!fifo_full)' guard
             if (fifo_count > FIFO_DEPTH) begin
                 $error("FIFO overflow detected! Count: %d, Depth: %d", fifo_count, FIFO_DEPTH);
             end
-            
+
             // Check for underflow
             if (do_read && fifo_empty) begin
                 $error("Attempting to read from empty FIFO!");
             end
-            
+
             // Check for write to full FIFO
+            // This check is for the internal signal, not an external write attempt
             if (do_write && fifo_full) begin
                 $error("Attempting to write to full FIFO!");
             end
