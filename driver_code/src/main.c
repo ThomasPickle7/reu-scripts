@@ -12,6 +12,7 @@
 
 // --- Structs and Defines ---
 
+// Structure for a single DMA descriptor block
 typedef struct {
     volatile uint32_t CONFIG_REG;
     volatile uint32_t BYTE_COUNT_REG;
@@ -21,12 +22,8 @@ typedef struct {
     uint8_t           _RESERVED[0x20 - 0x14];
 } DmaDescriptorBlock_t;
 
-typedef struct {
-    volatile uint32_t CONFIG_REG;
-    volatile uint32_t BYTE_COUNT_REG;
-    volatile uint32_t DEST_ADDR_REG;
-} DmaStreamDescriptor_t;
 
+// Structure for the CoreAXI4DMAController IP
 typedef struct {
     volatile const uint32_t VERSION_REG;
     volatile uint32_t       START_OPERATION_REG;
@@ -36,53 +33,75 @@ typedef struct {
     volatile uint32_t       INTR_0_CLEAR_REG;
     uint8_t                 _RESERVED2[0x60 - 0x1C];
     DmaDescriptorBlock_t    DESCRIPTOR[32];
+    // ***************************************************************************
+    // ** FIX: Re-added the missing STREAM_ADDR_REG member. **
+    // This register is used to tell the DMA controller where to find the
+    // stream descriptor chain in memory.
+    // ***************************************************************************
     volatile uint32_t       STREAM_ADDR_REG[4];
 } CoreAXI4DMAController_Regs_t;
 
 
+// Structure for a stream-based DMA descriptor
+typedef struct {
+    volatile uint32_t CONFIG_REG;
+    volatile uint32_t BYTE_COUNT_REG;
+    volatile uint32_t DEST_ADDR_REG;
+} DmaStreamDescriptor_t;
+
+// Structure for the AXI4StreamMaster IP Core Registers
+typedef struct {
+    volatile uint32_t CONTROL_REG;        // Offset 0x00
+    volatile const uint32_t STATUS_REG;   // Offset 0x04 (Read-Only)
+    uint8_t           _RESERVED1[0x10 - 0x08];
+    volatile uint32_t NUM_BYTES_REG;      // Offset 0x10
+    volatile uint32_t DEST_REG;           // Offset 0x14
+} AxiStreamSource_Regs_t;
+
+
 // --- Configuration Constants ---
-#define UIO_DMA_DEVNAME         "dma-controller@60010000"
-#define UIO_STREAM_GEN_DEVNAME  "stream-generator"
-#define UDMA_BUF_DEVNAME        "/dev/udmabuf-ddr-nc0"
-#define NUM_BUFFERS             4
-#define BUFFER_SIZE             (1024 * 1024)
+#define UIO_DMA_DEVNAME          "dma-controller@60010000"
+#define UIO_STREAM_SRC_DEVNAME   "stream-source@60000000"
+#define UDMA_BUF_DEVNAME         "/dev/udmabuf-ddr-nc0"
+#define NUM_BUFFERS              4
+#define BUFFER_SIZE              (1024 * 1024)
 
-#define PING_PONG_SRC_OFFSET      0
-#define PING_PONG_DEST_OFFSET     (PING_PONG_SRC_OFFSET + (NUM_BUFFERS * BUFFER_SIZE))
-#define STREAM_DEST_OFFSET        (PING_PONG_DEST_OFFSET + (NUM_BUFFERS * BUFFER_SIZE))
-#define STREAM_DESCRIPTOR_OFFSET  (STREAM_DEST_OFFSET + (NUM_BUFFERS * BUFFER_SIZE))
+#define PING_PONG_SRC_OFFSET     0
+#define PING_PONG_DEST_OFFSET    (PING_PONG_SRC_OFFSET + (NUM_BUFFERS * BUFFER_SIZE))
+#define STREAM_DEST_OFFSET       (PING_PONG_DEST_OFFSET + (NUM_BUFFERS * BUFFER_SIZE))
+#define STREAM_DESCRIPTOR_OFFSET (STREAM_DEST_OFFSET + (NUM_BUFFERS * BUFFER_SIZE))
 
-#define NUM_TRANSFERS           16
+#define NUM_TRANSFERS            16
 
 // --- Bitfield Flags ---
-#define MEM_OP_INCR             (0b01)
-#define MEM_FLAG_CHAIN          (1U << 10)
-#define MEM_FLAG_IRQ_ON_PROCESS (1U << 12)
-#define MEM_FLAG_SRC_RDY        (1U << 13)
-#define MEM_FLAG_DEST_RDY       (1U << 14)
-#define MEM_FLAG_VALID          (1U << 15)
-#define MEM_CONF_BASE           ((MEM_OP_INCR << 2) | MEM_OP_INCR | MEM_FLAG_CHAIN | MEM_FLAG_IRQ_ON_PROCESS)
+#define MEM_OP_INCR              (0b01)
+#define MEM_FLAG_CHAIN           (1U << 10)
+#define MEM_FLAG_IRQ_ON_PROCESS  (1U << 12)
+#define MEM_FLAG_SRC_RDY         (1U << 13)
+#define MEM_FLAG_DEST_RDY        (1U << 14)
+#define MEM_FLAG_VALID           (1U << 15)
+#define MEM_CONF_BASE            ((MEM_OP_INCR << 2) | MEM_OP_INCR | MEM_FLAG_CHAIN | MEM_FLAG_IRQ_ON_PROCESS)
 
-#define STREAM_OP_INCR          (0b01)
-#define STREAM_FLAG_CHAIN       (1U << 1)
-#define STREAM_FLAG_DEST_RDY    (1U << 2)
-#define STREAM_FLAG_VALID       (1U << 3)
-#define STREAM_FLAG_IRQ_EN      (1U << 4)
-#define STREAM_CONF_BASE        (STREAM_OP_INCR | STREAM_FLAG_IRQ_EN)
+#define STREAM_OP_INCR           (0b01)
+#define STREAM_FLAG_CHAIN        (1U << 1)
+#define STREAM_FLAG_DEST_RDY     (1U << 2)
+#define STREAM_FLAG_VALID        (1U << 3)
+#define STREAM_FLAG_IRQ_EN       (1U << 4)
+#define STREAM_CONF_BASE         (STREAM_OP_INCR | STREAM_FLAG_IRQ_EN)
 
-#define FDMA_START_MEM(n)       (1U << (n))
-#define FDMA_START_STREAM(n)    (1U << (16 + n))
-#define FDMA_IRQ_MASK_ALL       (0x0FU)
-#define FDMA_IRQ_CLEAR_ALL      (0x0FU)
-#define FDMA_IRQ_STAT_WR_ERR    (1U << 1)
+#define FDMA_START_MEM(n)        (1U << (n))
+#define FDMA_START_STREAM(n)     (1U << (16 + n))
+#define FDMA_IRQ_MASK_ALL        (0x0FU)
+#define FDMA_IRQ_CLEAR_ALL       (0x0FU)
+#define FDMA_IRQ_STAT_WR_ERR     (1U << 1)
 #define FDMA_IRQ_STAT_INVALID_DESC (1U << 3)
 
-#define SYSFS_PATH_LEN          (128)
-#define ID_STR_LEN              (32)
-#define UIO_DEVICE_PATH_LEN     (32)
-#define NUM_UIO_DEVICES         (32)
-#define MAP_SIZE                4096UL
-#define PAGE_SIZE               sysconf(_SC_PAGE_SIZE)
+#define SYSFS_PATH_LEN           (128)
+#define ID_STR_LEN               (32)
+#define UIO_DEVICE_PATH_LEN      (32)
+#define NUM_UIO_DEVICES          (32)
+#define MAP_SIZE                 4096UL
+#define PAGE_SIZE                sysconf(_SC_PAGE_SIZE)
 
 // --- Helper Functions ---
 static uintptr_t get_udma_phys_addr(const char* uio_device_name) {
@@ -118,7 +137,6 @@ static int get_uio_device_number(const char *id) {
 void force_dma_stop(CoreAXI4DMAController_Regs_t* dma_regs) { printf("  Forcing DMA stop...\n"); for (int i = 0; i < 32; ++i) dma_regs->DESCRIPTOR[i].CONFIG_REG = 0; for (int i = 0; i < 4; ++i) dma_regs->STREAM_ADDR_REG[i] = 0; __sync_synchronize(); }
 void exhaustive_interrupt_reset(CoreAXI4DMAController_Regs_t* dma_regs, int dma_uio_fd) { printf("\n--- Exhaustive Interrupt Reset ---\n"); force_dma_stop(dma_regs); dma_regs->INTR_0_MASK_REG = 0; __sync_synchronize(); uint32_t dummy; int flags = fcntl(dma_uio_fd, F_GETFL, 0); fcntl(dma_uio_fd, F_SETFL, flags | O_NONBLOCK); while(read(dma_uio_fd, &dummy, sizeof(dummy)) > 0); fcntl(dma_uio_fd, F_SETFL, flags); dma_regs->INTR_0_CLEAR_REG = FDMA_IRQ_CLEAR_ALL; __sync_synchronize(); uint32_t irq_enable = 1; write(dma_uio_fd, &irq_enable, sizeof(irq_enable)); printf("--- Interrupt Reset Complete ---\n"); }
 
-// MODIFIED: Added these helper functions back in to fix linker error.
 void generate_test_data(uint8_t* buffer, size_t size, uint8_t seed) {
     printf("  Generating %zu bytes of test data with seed 0x%02X...\n", size, seed);
     for (size_t i = 0; i < size; ++i) {
@@ -174,6 +192,91 @@ void diagnose_udmabuf(uintptr_t phys_base, uint8_t* virt_base) {
 
 
 // --- Test Functions ---
+
+void run_stream_source_validation_test(AxiStreamSource_Regs_t* regs) {
+    printf("\n--- Running AXI Stream Source IP Core Validation Test ---\n");
+    int pass_count = 0;
+    int fail_count = 0;
+
+    // 1. Read Initial State
+    printf("1. Reading initial STATUS register...\n");
+    uint32_t status = regs->STATUS_REG;
+    if (status == 0x0) {
+        printf("   PASS: Initial status is 0x0 (Not Busy), as expected.\n");
+        pass_count++;
+    } else {
+        printf("   FAIL: Initial status is 0x%X, expected 0x0.\n", status);
+        fail_count++;
+    }
+
+    // 2. Verify Write/Read-Back on configuration registers
+    printf("2. Verifying Write/Read-Back on NUM_BYTES and DEST registers...\n");
+    const uint32_t test_bytes = 4096;
+    const uint32_t test_dest = 0x1;
+    regs->NUM_BYTES_REG = test_bytes;
+    regs->DEST_REG = test_dest;
+    __sync_synchronize(); // Ensure writes have reached the hardware
+    uint32_t read_bytes = regs->NUM_BYTES_REG;
+    uint32_t read_dest = regs->DEST_REG;
+
+    if (read_bytes == test_bytes) {
+        printf("   PASS: Wrote 0x%X to NUM_BYTES_REG and read it back.\n", test_bytes);
+        pass_count++;
+    } else {
+        printf("   FAIL: Wrote 0x%X to NUM_BYTES_REG, but read back 0x%X.\n", test_bytes, read_bytes);
+        fail_count++;
+    }
+    if (read_dest == test_dest) {
+        printf("   PASS: Wrote 0x%X to DEST_REG and read it back.\n", test_dest);
+        pass_count++;
+    } else {
+        printf("   FAIL: Wrote 0x%X to DEST_REG, but read back 0x%X.\n", test_dest, read_dest);
+        fail_count++;
+    }
+
+    // 3. Verify Control Logic (Start command and Busy flag)
+    printf("3. Verifying control logic by issuing START command...\n");
+    regs->CONTROL_REG = 1;
+    __sync_synchronize();
+    status = regs->STATUS_REG;
+    if (status == 0x1) {
+        printf("   PASS: Wrote 1 to CONTROL_REG, STATUS register is now 0x1 (Busy).\n");
+        pass_count++;
+    } else {
+        printf("   FAIL: Wrote 1 to CONTROL_REG, but STATUS is 0x%X. Expected 0x1.\n", status);
+        fail_count++;
+    }
+
+    // 4. Poll for completion
+    printf("4. Polling for completion (waiting for Busy bit to clear)...\n");
+    // This assumes a sink (like a DMA) is ready to accept data, so the transfer
+    // can complete. A timeout is used to prevent an infinite loop.
+    int timeout = 1000000; // 1 million polls
+    while ((regs->STATUS_REG & 0x1) && (timeout > 0)) {
+        timeout--;
+    }
+
+    if (timeout > 0) {
+        printf("   PASS: Busy bit cleared. Transfer has likely completed.\n");
+        pass_count++;
+    } else {
+        printf("   FAIL: Timed out waiting for Busy bit to clear. The IP may be stalled.\n");
+        fail_count++;
+    }
+    // Reset control register for next run
+    regs->CONTROL_REG = 0;
+    __sync_synchronize();
+
+
+    // Final Result
+    printf("\n--- Test Summary ---\n");
+    if (fail_count == 0) {
+        printf("***** AXI Stream Source Validation Test PASSED (%d/%d checks) *****\n", pass_count, pass_count);
+    } else {
+        printf("***** AXI Stream Source Validation Test FAILED (%d/%d checks failed) *****\n", fail_count, pass_count + fail_count);
+    }
+}
+
 
 void run_mem_to_mem_ping_pong(CoreAXI4DMAController_Regs_t* dma_regs, int dma_uio_fd, uintptr_t dma_phys_base, uint8_t* dma_virt_base) {
     printf("\n--- Running Memory-to-Memory Ping-Pong Test ---\n");
@@ -285,8 +388,8 @@ void run_control_path_validation_test(CoreAXI4DMAController_Regs_t* dma_regs, in
 
     printf("\n  --- Post-Start Diagnostics ---\n");
     printf("  Value read back from START_OPERATION_REG: 0x%08X\n", dma_regs->START_OPERATION_REG);
-    printf("  Value read from INTR_0_MASK_REG:        0x%08X\n", dma_regs->INTR_0_MASK_REG);
-    printf("  Value read from INTR_0_STAT_REG:        0x%08X\n", dma_regs->INTR_0_STAT_REG);
+    printf("  Value read from INTR_0_MASK_REG:         0x%08X\n", dma_regs->INTR_0_MASK_REG);
+    printf("  Value read from INTR_0_STAT_REG:         0x%08X\n", dma_regs->INTR_0_STAT_REG);
     printf("  ------------------------------\n\n");
 
     fd_set fds;
@@ -341,8 +444,9 @@ void run_control_path_validation_test(CoreAXI4DMAController_Regs_t* dma_regs, in
 
 // --- Main Application Logic ---
 int main(void) {
-    int dma_uio_fd = -1, udma_buf_fd = -1;
+    int dma_uio_fd = -1, stream_src_uio_fd = -1, udma_buf_fd = -1;
     CoreAXI4DMAController_Regs_t *dma_regs = NULL;
+    AxiStreamSource_Regs_t *stream_src_regs = NULL;
     uint8_t* dma_virt_base = NULL;
     uintptr_t dma_phys_base = 0;
     size_t dma_buffer_size = STREAM_DESCRIPTOR_OFFSET + (NUM_BUFFERS * sizeof(DmaStreamDescriptor_t));
@@ -356,17 +460,28 @@ int main(void) {
 
     printf("\n--- Initializing Devices ---\n");
     printf("1. Mapping DMA Controller Registers (%s)...\n", UIO_DMA_DEVNAME);
-    int uio_num = get_uio_device_number(UIO_DMA_DEVNAME);
-    if (uio_num < 0) { fprintf(stderr, "   FATAL: Could not find UIO for %s.\n", UIO_DMA_DEVNAME); return 1; }
+    int dma_uio_num = get_uio_device_number(UIO_DMA_DEVNAME);
+    if (dma_uio_num < 0) { fprintf(stderr, "   FATAL: Could not find UIO for %s.\n", UIO_DMA_DEVNAME); return 1; }
     char uio_dev_path[UIO_DEVICE_PATH_LEN];
-    snprintf(uio_dev_path, UIO_DEVICE_PATH_LEN, "/dev/uio%d", uio_num);
+    snprintf(uio_dev_path, UIO_DEVICE_PATH_LEN, "/dev/uio%d", dma_uio_num);
     dma_uio_fd = open(uio_dev_path, O_RDWR);
     if (dma_uio_fd < 0) { perror("   FATAL: Failed to open DMA UIO"); return 1; }
     dma_regs = mmap(NULL, MAP_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, dma_uio_fd, 0);
     if (dma_regs == MAP_FAILED) { perror("   FATAL: Failed to mmap DMA UIO"); close(dma_uio_fd); return 1; }
     printf("   SUCCESS: DMA Controller mapped.\n");
     
-    printf("2. Mapping Non-Cached DMA Buffer (%s)...\n", UDMA_BUF_DEVNAME);
+    printf("2. Mapping AXI Stream Source Registers (%s)...\n", UIO_STREAM_SRC_DEVNAME);
+    int stream_src_uio_num = get_uio_device_number(UIO_STREAM_SRC_DEVNAME);
+    if (stream_src_uio_num < 0) { fprintf(stderr, "   FATAL: Could not find UIO for %s.\n", UIO_STREAM_SRC_DEVNAME); /* cleanup and exit */ return 1; }
+    snprintf(uio_dev_path, UIO_DEVICE_PATH_LEN, "/dev/uio%d", stream_src_uio_num);
+    stream_src_uio_fd = open(uio_dev_path, O_RDWR);
+    if (stream_src_uio_fd < 0) { perror("   FATAL: Failed to open Stream Source UIO"); /* cleanup and exit */ return 1; }
+    stream_src_regs = mmap(NULL, MAP_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, stream_src_uio_fd, 0);
+    if (stream_src_regs == MAP_FAILED) { perror("   FATAL: Failed to mmap Stream Source UIO"); /* cleanup and exit */ return 1; }
+    printf("   SUCCESS: AXI Stream Source mapped.\n");
+
+
+    printf("3. Mapping Non-Cached DMA Buffer (%s)...\n", UDMA_BUF_DEVNAME);
     udma_buf_fd = open(UDMA_BUF_DEVNAME, O_RDWR | O_SYNC);
     if (udma_buf_fd < 0) { perror("   FATAL: Failed to open " UDMA_BUF_DEVNAME); return 1; }
     dma_virt_base = mmap(NULL, dma_buffer_size, PROT_READ | PROT_WRITE, MAP_SHARED, udma_buf_fd, 0);
@@ -384,6 +499,7 @@ int main(void) {
         printf("  1 - Run Memory-to-Memory Ping-Pong Test\n");
         printf("  2 - Run Stream-to-Memory Test (Simulated)\n");
         printf("  3 - Run DMA Control Path Validation Test (Software-Only)\n");
+        printf("  4 - Run AXI Stream Source IP Validation Test\n");
         printf("  D - Run Low-Level System Diagnostics\n");
         printf("  Q - Exit\n> ");
         scanf(" %c", &cmd);
@@ -395,6 +511,8 @@ int main(void) {
             run_stream_to_mem_test(dma_regs, dma_uio_fd, dma_phys_base, dma_virt_base);
         } else if (cmd == '3') {
             run_control_path_validation_test(dma_regs, dma_uio_fd, dma_phys_base, dma_virt_base);
+        } else if (cmd == '4') {
+            run_stream_source_validation_test(stream_src_regs);
         } else if (cmd == 'D' || cmd == 'd') {
             diagnose_udmabuf(dma_phys_base, dma_virt_base);
         } else if (cmd == 'Q' || cmd == 'q') {
@@ -407,6 +525,8 @@ int main(void) {
     // Cleanup
     munmap(dma_virt_base, dma_buffer_size);
     close(udma_buf_fd);
+    munmap(stream_src_regs, MAP_SIZE);
+    close(stream_src_uio_fd);
     munmap(dma_regs, MAP_SIZE);
     close(dma_uio_fd);
     printf("\nExiting.\n");
