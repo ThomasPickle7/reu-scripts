@@ -1,16 +1,30 @@
 # Makefile for RadioHound DMA Project
 
 # --- Toolchain ---
-CROSS_COMPILE = riscv64-unknown-elf-
+CROSS_COMPILE ?=
 CC = $(CROSS_COMPILE)gcc
 LD = $(CROSS_COMPILE)ld
 OBJCOPY = $(CROSS_COMPILE)objcopy
 
 # --- Directories ---
-APP_DIR = software/app
-BSP_DIR = software/bsp
-DRIVERS_DIR = software/drivers
+APP_DIR = app
+BSP_DIR = bsp
+DRIVERS_DIR = drivers
 BUILD_DIR = build
+
+
+# --- Output File Names ---
+TARGET = radiohound
+TARGET_ELF = $(BUILD_DIR)/$(TARGET).elf
+TARGET_BIN = $(BUILD_DIR)/$(TARGET).bin
+
+
+# --- Compiler and Linker Flags ---
+# Use 64-bit architecture and ABI flags to match the host system.
+# -march=rv64gc is standard for 64-bit RISC-V general purpose systems.
+# -mabi=lp64d is the standard 64-bit ABI.
+CFLAGS = -I$(INC_DIR) -O0 -g -Wall -march=rv64gc -mabi=lp64d
+
 
 # --- Source Files ---
 C_SRCS += $(wildcard $(APP_DIR)/*.c)
@@ -23,14 +37,10 @@ OBJS = $(patsubst %.c, $(BUILD_DIR)/%.o, $(notdir $(C_SRCS)))
 # --- Include Paths ---
 INCLUDE_PATHS = -I$(APP_DIR) -I$(BSP_DIR) -I$(DRIVERS_DIR)
 
-# --- Compiler Flags ---
-# -mcmodel=medany is important for position-independent code.
-# -O0 disables optimizations for easier debugging.
-CFLAGS = -g -mcmodel=medany -Wall -Wextra -O0 $(INCLUDE_PATHS)
 
 # --- Linker Flags ---
 # Assumes a linker script named 'link.ld' is in the root directory.
-LDFLAGS = -T link.ld -nostartfiles
+LDFLAGS = 
 
 # --- Executable ---
 TARGET = $(BUILD_DIR)/radiohound
