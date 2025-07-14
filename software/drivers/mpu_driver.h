@@ -1,33 +1,36 @@
-/**************************************************************************************************
- * @file mpu_driver.h
- * @author Thomas Pickle
- * @brief MPU Driver for the PolarFire SoC using PMP registers
- * @version 0.1
- * @date 2024-07-09
- * * @copyright Copyright (c) 2024
- * *************************************************************************************************/
 #ifndef MPU_DRIVER_H_
 #define MPU_DRIVER_H_
 
 #include <stdint.h>
 
-#define PMP_READ    0x01
-#define PMP_WRITE   0x02
-#define PMP_EXEC    0x04
-#define PMP_LOCK    0x80
+/**
+ * @brief Structure for a single PMP (Physical Memory Protection) entry within an MPU.
+ * A 64-bit register combining address and configuration.
+ */
+typedef volatile uint64_t MpuPmpEntry_t;
 
-#define PMP_TOR     0x08
-#define PMP_NA4     0x10
-#define PMP_NAPOT   0x18
+/**
+ * @brief Defines the register map for a single MPU (for FIC0).
+ */
+typedef struct {
+    MpuPmpEntry_t PMPCFG[16]; // 16 PMP entries per MPU for FIC0
+    uint8_t       _RESERVED[0x80 - (sizeof(MpuPmpEntry_t) * 16)];
+    volatile const uint64_t STATUS;
+} Mpu_Regs_t;
 
-/**************************************************************************************************
- * @brief Configures a PMP region
- * * @param region The PMP region to configure
- * @param base The base address of the region
- * @param size The size of the region
- * @param permissions The permissions for the region (PMP_READ, PMP_WRITE, PMP_EXEC)
- * @param lock The lock status of the region (PMP_LOCK)
- *************************************************************************************************/
-void mpu_configure_region(uint8_t region, uint32_t base, uint32_t size, uint8_t permissions, uint8_t lock);
+
+// Bit definitions for the PMPCFG register's MODE field
+#define MPU_MODE_READ_EN        (1ULL << 56)
+#define MPU_MODE_WRITE_EN       (1ULL << 57)
+#define MPU_MODE_EXEC_EN        (1ULL << 58)
+#define MPU_MODE_MATCH_NAPOT    (3ULL << 59)
+#define MPU_MODE_LOCKED         (1ULL << 63)
+
+/**
+ * @brief Configures MPU1 (for FIC0) to allow full access to all of DDR memory.
+ * This must be called at startup to allow the fabric DMA to work.
+ * @return 1 on success, 0 on failure.
+ */
+int MPU_Configure_FIC0(void);
 
 #endif /* MPU_DRIVER_H_ */

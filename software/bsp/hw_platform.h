@@ -1,39 +1,27 @@
-/**************************************************************************************************
- * @file hw_platform.h
- * @author Thomas Pickle
- * @brief Hardware platform specific definitions
- * @version 0.2
- * @date 2024-07-10
- *
- * @copyright Copyright (c) 2024
- *
- *************************************************************************************************/
 #ifndef HW_PLATFORM_H_
 #define HW_PLATFORM_H_
 
 #include <stdint.h>
 
-// --- Memory Map ---
-#define DDR_BASE_ADDR           0x80000000
-#define DDR_SIZE                0x40000000  // 1GB
-#define AXI_DMA_BASE_ADDR       0x60010000  // From UIO_DMA_DEVNAME
-#define PLIC_BASE_ADDR          0x0C000000
+// --- Base Addresses from Memory Map ---
+#define FDMA_BASE_ADDR                 0x60010000UL
+#define AXI_STREAM_SOURCE_BASE_ADDR    0x60000000UL
+#define MPU_BASE_ADDR                  0x20005000UL
 
-// --- Interrupt Map ---
-#define AXI_DMA_IRQ             10 // Example interrupt number
+// --- Linux Device Identifiers ---
+#define UIO_DMA_DEVNAME          "dma-controller@60010000"
+#define UIO_STREAM_SRC_DEVNAME   "stream-source@60000000"
+#define UDMA_BUF_DEVNAME         "/dev/udmabuf-ddr-nc0"
+#define UDMA_BUF_SYNC_DEVNAME    "udmabuf-ddr-nc0" // Name used for getting phys addr
 
-// --- PLIC Offsets ---
-#define PLIC_EN_OFFSET          (PLIC_BASE_ADDR + 0x2000)
+// --- DMA Buffer Layout Configuration ---
+#define NUM_BUFFERS              4
+#define BUFFER_SIZE              (1024 * 1024)
 
-// --- DMA Buffer Configuration ---
-#define NUM_BUFFERS             4
-#define BUFFER_SIZE             (1024 * 1024) // 1MB
+// These offsets are within the single large udmabuf
+#define PING_PONG_SRC_OFFSET     0
+#define PING_PONG_DEST_OFFSET    (PING_PONG_SRC_OFFSET + (NUM_BUFFERS * BUFFER_SIZE))
+#define STREAM_DEST_OFFSET       (PING_PONG_DEST_OFFSET + (NUM_BUFFERS * BUFFER_SIZE))
+#define STREAM_DESCRIPTOR_OFFSET (STREAM_DEST_OFFSET + (NUM_BUFFERS * BUFFER_SIZE))
 
-// Base address for all DMA buffers (assumes a contiguous block)
-#define DMA_BUFFER_AREA_BASE    (DDR_BASE_ADDR + 0x10000000) // Place buffers at DDR + 256MB
-
-// Offsets within the DMA buffer area
-#define PING_PONG_SRC_OFFSET    0
-#define PING_PONG_DEST_OFFSET   (PING_PONG_SRC_OFFSET + (NUM_BUFFERS * BUFFER_SIZE))
-
-#endif /* HW_PLATFORM_H_ */
+#endif // HW_PLATFORM_H_

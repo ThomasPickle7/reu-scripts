@@ -1,74 +1,64 @@
-# Makefile for RadioHound DMA Project
+#
+# Makefile for the RadioHound project (Linux Userspace Version)
+#
 
-# --- Toolchain ---
+# --- Toolchain Definition ---
+# Use the native gcc compiler on the BeagleV for a Linux application.
 CROSS_COMPILE ?=
 CC = $(CROSS_COMPILE)gcc
-LD = $(CROSS_COMPILE)ld
-OBJCOPY = $(CROSS_COMPILE)objcopy
 
-# --- Directories ---
+# --- Project Structure ---
+BUILD_DIR = build
 APP_DIR = app
 BSP_DIR = bsp
 DRIVERS_DIR = drivers
-BUILD_DIR = build
-
 
 # --- Output File Names ---
 TARGET = radiohound
-TARGET_ELF = $(BUILD_DIR)/$(TARGET).elf
-TARGET_BIN = $(BUILD_DIR)/$(TARGET).bin
-
+TARGET_EXE = $(BUILD_DIR)/$(TARGET)
 
 # --- Compiler and Linker Flags ---
-# Use 64-bit architecture and ABI flags to match the host system.
-# -march=rv64gc is standard for 64-bit RISC-V general purpose systems.
-# -mabi=lp64d is the standard 64-bit ABI.
-CFLAGS = -I$(INC_DIR) -O0 -g -Wall -march=rv64gc -mabi=lp64d
+# Standard flags for a 64-bit RISC-V Linux application.
+CFLAGS = -O0 -g -Wall -march=rv64gc -mabi=lp64d
+
+# Add all subdirectories to the include path.
+INCLUDES = -I$(APP_DIR) -I$(BSP_DIR) -I$(DRIVERS_DIR)
+
+# For a standard Linux app, we link against the C library, so LDFLAGS is minimal.
+LDFLAGS =
+
+# --- Source and Object Files ---
+# Find all .c files in the source directories.
+SRCS = $(wildcard $(APP_DIR)/*.c) $(wildcard $(BSP_DIR)/*.c) $(wildcard $(DRIVERS_DIR)/*.c)
+
+# Create a list of object files, placing them in the build directory.
+OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(SRCS))
 
 
-# --- Source Files ---
-C_SRCS += $(wildcard $(APP_DIR)/*.c)
-C_SRCS += $(wildcard $(BSP_DIR)/*.c)
-C_SRCS += $(wildcard $(DRIVERS_DIR)/*.c)
+# =============================================================================
+# Makefile Rules
+# =============================================================================
 
-# --- Object Files ---
-OBJS = $(patsubst %.c, $(BUILD_DIR)/%.o, $(notdir $(C_SRCS)))
+# Default rule: build the final executable.
+all: $(TARGET_EXE)
 
-# --- Include Paths ---
-INCLUDE_PATHS = -I$(APP_DIR) -I$(BSP_DIR) -I$(DRIVERS_DIR)
-
-
-# --- Linker Flags ---
-# Assumes a linker script named 'link.ld' is in the root directory.
-LDFLAGS = 
-
-# --- Executable ---
-TARGET = $(BUILD_DIR)/radiohound
-
-.PHONY: all clean
-
-all: $(TARGET).bin
-
-$(TARGET).bin: $(TARGET).elf
-	$(OBJCOPY) -O binary $< $@
-
-$(TARGET).elf: $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
-
-# Rule to compile source files from the 'app' directory
-$(BUILD_DIR)/%.o: $(APP_DIR)/%.c
+# Rule to link the final executable.
+$(TARGET_EXE): $(OBJS)
 	@mkdir -p $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
+	@echo "LD   $@"
+	$(CC) $(LDFLAGS) $^ -o $@
 
-# Rule to compile source files from the 'bsp' directory
-$(BUILD_DIR)/%.o: $(BSP_DIR)/%.c
-	@mkdir -p $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
+# Pattern rule to compile any .c file into its corresponding .o file.
+# This single rule handles all source directories.
+$(BUILD_DIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	@echo "CC   $<"
+	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 
-# Rule to compile source files from the 'drivers' directory
-$(BUILD_DIR)/%.o: $(DRIVERS_DIR)/%.c
-	@mkdir -p $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
+# Rule to clean up all build artifacts.
 clean:
-	rm -rf $(BUILD_DIR)
+	@echo "CLEAN"
+	@rm -rf $(BUILD_DIR)
+
+# Phony targets are not real files.
+.PHONY: all clean
