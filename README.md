@@ -1,6 +1,6 @@
 # RadioHound High-Speed Data Acquisition System
 
-This document provides a comprehensive guide to the design, status, and development process for the RadioHound high-speed data acquisition system. The project's primary goal is to stream ADC data from a RadioHound sensor through the FPGA fabric of a BeagleV-Fire board and into its DDR memory at the highest possible throughput. [cite\_start]This serves as the foundational infrastructure to significantly increase the RadioHound project's sampling rate beyond its current 48MHz capability[cite: 16355].
+This document provides a comprehensive guide to the design, status, and development process for the RadioHound high-speed data acquisition system. The project's primary goal is to stream ADC data from a RadioHound sensor through the FPGA fabric of a BeagleV-Fire board and into its DDR memory at the highest possible throughput. [cite\_start]This serves as the foundational infrastructure to significantly increase the RadioHound project's sampling rate beyond its current 48MHz capability [cite: 16355].
 
 ## System Architecture
 
