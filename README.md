@@ -1,132 +1,69 @@
 # RadioHound High-Speed Data Acquisition System
 
-This document provides a comprehensive guide to the design, status, and development process for the RadioHound high-speed data acquisition system. The project's primary goal is to stream ADC data from a RadioHound sensor through the FPGA fabric of a BeagleV-Fire board and into its DDR memory at the highest possible throughput. This serves as the foundational infrastructure to significantly increase the RadioHound project's sampling rate beyond its current 48MHz capability.
+## 1\. Overview
 
-## System Architecture
+This repository contains the C source code, reference materials, and development environment configurations for the RadioHound High-Speed Data Acquisition project. The goal of this project is to implement a high-throughput data path from an external ADC into the BeagleV-Fire's DDR memory using its FPGA.
 
-The system is architected to create a direct, high-throughput data path from the external ADC to the main DDR memory, minimizing CPU overhead. This is achieved by leveraging the FPGA for data packing and transfer, with the CPU's role limited to configuration and control.
+This README provides a guide to the structure and contents of this repository. For a detailed explanation of the system architecture, project status, and development methodology, please refer to the **"RadioHound Transfer Documents"**.
 
-The architecture is centered around Microchip's `CoreAXI4DMAController` IP, which is capable of achieving transfer rates up to 7488 Mb/s.
+## 2\. Repository Structure
 
-### Core Components
+The repository is organized into several key directories:
 
-#### Hardware (FPGA Fabric)
+```
+.
+├── .vscode/
+├── driver_code/
+├── ref/
+└── software/
+    ├── app/
+    ├── bsp/
+    └── drivers/
+```
 
-  * **I/O (ADC):** An external 8-bit ADC from the RadioHound sensor board provides the raw data samples.
-  * **Stream Packer (`axi_stream_source.v`):** A custom Verilog module that aggregates eight 8-bit samples into a single 64-bit word. This packing is essential to maximize the efficiency of the 64-bit AXI4 bus. It is controlled via memory-mapped registers at base address `0x60000000`.
-  * **DMA Interface (`CoreAXI4DMAController`):** This Microchip IP core manages the data movement. It reads data from the AXI4-Stream source (the packer) and writes it to the DDR memory. Its control registers are located at base address `0x60010000`.
-  * **AXI Interconnect (`CoreAXI4Interconnect`):** This IP core acts as the central bus matrix, connecting all FPGA peripherals to the CPU's memory subsystem and defining the memory map for the FPGA design.
+### `/software/` - Primary Application Code
 
-#### Software & Memory (CPU Stack)
+This directory contains the main, actively developed source code for the project. It is intended to be compiled and run on the BeagleV-Fire's RISC-V processor.
 
-  * **DDR Memory:** The main system memory. DMA operations specifically target a **non-cached** memory region starting at `0xC0000000` to prevent CPU cache coherency issues and maximize throughput.
-  * **C Drivers:** A suite of bare-metal C files that configure and control the hardware components.
-      * **`mpu_driver.c`:** This critical driver configures the **Memory Protection Unit (MPU)**. It grants the DMA controller (an AXI master) the necessary permissions to read and write to the non-cached DDR memory space. Without this configuration, all DMA transfers would fail.
-      * **`dma_driver.c`:** This driver provides the API to initialize, configure, and manage the `CoreAXI4DMAController`, primarily by setting up DMA descriptors in memory.
+  * **`/app/`**: Contains the high-level application logic.
 
-## Project Status
+      * `main.c`: The main entry point for the test application. It initializes the necessary drivers and orchestrates the DMA tests.
+      * `stream_tests.c`, `stream_tests.h`: Implements the core DMA test functions, including the working memory-to-memory test and the currently-hanging stream-to-memory test.
+      * `radiohound_dma_api.c`, `radiohound_dma_api.h`: A high-level API that abstracts the details of DMA setup and control, providing simpler functions for application use.
+      * `diagnostics.c`, `diagnostics.h`: Provides helper functions for printing formatted output and diagnostic information to the serial console.
 
-### Completed & Verified
+  * **`/bsp/` (Board Support Package)**: Contains files specific to the hardware platform.
 
-  * **MPU Driver (`mpu_driver.c`):** Correctly configures the MPU to grant the FPGA fabric access to the non-cached DDR memory range `0xC0000000` - `0xDFFFFFFF`.
-  * **DMA Driver (`dma_driver.c`):** Core functions for DMA initialization and descriptor setup are implemented and stable.
-  * **Memory-to-Memory DMA Test:** The `run_mem_to_mem_ping_pong` test in `main.c` passes successfully. This test verifies that the MPU is configured correctly, the CPU can communicate with the DMA, and the DMA can read from and write to DDR memory.
+      * `hw_platform.h`: Defines hardware-specific constants, such as the base addresses for peripherals like the DMA controller and the custom stream packer. These addresses are derived from the Libero SoC memory map.
 
-### In Progress
+  * **`/drivers/`**: Contains the low-level drivers for controlling the FPGA peripherals.
 
-  * **Stream-to-Memory DMA Test:** The software for this test (`run_stream_to_mem_test`) is implemented and correctly configures the DMA to receive a stream. However, the test currently **hangs** because the DMA controller is waiting for the `TVALID` AXI-Stream signal from a hardware source. This signal is never asserted because the `axi_stream_source.v` packer is not yet connected to the DMA controller in the FPGA design. This is the project's primary bottleneck.
+      * `dma_driver.c`, `dma_driver.h`: The driver for the Microchip `CoreAXI4DMAController`. It handles the initialization of the DMA engine and the setup of DMA descriptors.
+      * `mpu_driver.c`, `mpu_driver.h`: A critical driver for configuring the RISC-V **Memory Protection Unit (MPU)**. Its sole purpose is to grant the DMA controller master access to the non-cached DDR memory region, which is essential for any DMA operation to succeed.
 
-### Next Steps
+### `/ref/` - Reference Materials
 
-1.  **Hardware Integration of `axi_stream_source.v`:** In the Libero SoC FPGA project, the immediate next step is to connect the AXI-Stream output of the `axi_stream_source.v` module to the AXI-Stream slave input of the `CoreAXI4DMAController`. This will complete the hardware data path.
-2.  **End-to-End System Validation:** Once integrated, use a test bench or a simple counter in the FPGA to generate data and feed it into the packer. Rerun the `run_stream_to_mem_test` to verify that data is correctly transferred from the FPGA into DDR memory.
-3.  **External I/O Implementation:** After validating the full fabric-to-DDR data path, the system should be configured to accept clock and data signals from the external RadioHound ADC.
+This directory is a collection of essential datasheets, hardware configuration files, and reference code.
 
-## Development Environment & Toolchain
+  * **Datasheets (PDF):**
 
-Setting up the correct development environment is crucial. A pre-configured VirtualBox VM is the recommended and fastest way to get started, as it contains all necessary licensed software and a configured toolchain.
+      * `CoreAXI4DMAController_HB.pdf`: The official handbook for the DMA controller IP.
+      * `CoreAXI4Interconnect_HB.pdf`: The handbook for the AXI bus interconnect IP.
+      * `4PolarFire_SoC_FPGA_MSS_Technical_Reference_Manual_VC.pdf`: The comprehensive technical manual for the PolarFire SoC, which is invaluable for understanding the MPU and memory subsystem.
 
-### Option A: Pre-configured Virtual Machine (Recommended)
+  * **FPGA Configuration (JSON):** These files are generated by the Libero SoC software and define the hardware layout of the custom FPGA design.
 
-  * **VM Location:** *[Location of the .ova file should be specified here]*
-  * **Credentials:**
-      * **Username:** `vboxuser`
-      * **Password:** `1303`
-  * **Setup:**
-    1.  Install [Oracle VirtualBox](https://www.virtualbox.org/).
-    2.  Go to `File > Import Appliance` and select the downloaded `.ova` file.
-    3.  Start the VM and log in. All tools are pre-installed.
+      * `MY_CUSTOM_FPGA_DESIGN_64FE066A_memory_map.json`: Defines the base addresses for all memory-mapped peripherals in the FPGA fabric.
+      * `MY_CUSTOM_FPGA_DESIGN_64FE066A_interrupt_map.json`: Defines the interrupt connections for the FPGA design.
 
-### Option B: Manual Installation
+### `/driver_code/` - Legacy/Archived Code
 
-If you prefer a manual setup (Ubuntu 22.04 LTS recommended), install the following tools:
+This directory contains an older version of the driver and application code. While it may be useful for historical context, the code in the `/software/` directory is the most current and should be considered the primary source for future development.
 
-1.  **Microchip Libero SoC v2023.2:**
-      * **Download:** Available from Microchip's website (requires a free account).
-      * **License:** A **Silver-level license** is required. You can request a free Silver license from Microchip's licensing portal.
-      * **Installation:** Run the installer with `sudo`.
-2.  **Microchip SoftConsole v2023.2:**
-      * **Download:** Available from the same Libero SoC download page. This IDE includes the RISC-V GCC toolchain for compiling the C code.
-3.  **System Dependencies:**
-    ```bash
-    # Python dependencies
-    pip install gitpython pyyaml
+## 3\. How to Use This Repository
 
-    # System packages
-    sudo apt install device-tree-compiler
-    sudo apt install python-is-python3
-    ```
 
-## Build and Deployment
-
-### 1\. Building the Gateware (FPGA)
-
-This project uses the official BeagleV-Fire gateware repository, which provides a robust build system for synthesizing the FPGA fabric, compiling the bootloader (HSS), and generating the necessary Linux Device Tree Overlays.
-
-1.  **Source the Environment Script:** Before building, source the setup script from your Libero installation.
-2.  **Clone the Repository:**
-    ```bash
-    git clone https://openbeagle.org/beaglev-fire/gateware.git
-    cd gateware
-    ```
-3.  **Run the Build Script:** The build is defined by a YAML configuration file. To build the custom design for this project:
-    ```bash
-    python build-bitstream.py ./build-options/my_custom_design.yaml
-    ```
-    *(Note: The exact yaml file name should be confirmed in the repository)*
-
-### 2\. Flashing the Gateware
-
-1.  **Transfer Files:** After a successful build, the output files will be in the `bitstream/` directory. Use `scp` to copy the entire design directory to the BeagleV-Fire.
-    ```bash
-    scp -r ./bitstream/my_custom_fpga_design beagle@[board-ip-address]:/home/beagle
-    ```
-2.  **Run the Update Script:** Connect to the board via SSH or UART and run the provided script to flash the gateware.
-    ```bash
-    sudo /usr/share/beagleboard/gateware/change-gateware.sh ./my_custom_fpga_design
-    ```
-    Do not power off the board until it has rebooted successfully.
-
-### 3\. Building and Running the Software
-
-The C drivers and test application are compiled and run directly on the BeagleV-Fire's RISC-V processor.
-
-1.  **Transfer Files:** Copy the `software` directory from the project repository to the board.
-    ```bash
-    scp -r ./software beagle@[board-ip-address]:/home/beagle
-    ```
-2.  **Compile:** Navigate to the directory on the board and use the provided Makefile.
-    ```bash
-    cd software
-    make
-    ```
-3.  **Run:** Execute the compiled test application.
-    ```bash
-    sudo ./build/dma_test_app.elf
-    ```
-
-## Troubleshooting Common Issues
-
-  * **Changing IP Address:** The board's IP address may change after flashing new gateware. Using the UART debug port is the most reliable connection method for diagnostics, though SSH is recommended for file transfers.
-  * **Kernel Startup Failure:** A broken or incorrect device tree can cause the system to hang at "Starting kernel...". To recover, you must interrupt the U-Boot process and manually load the kernel and device tree from eMMC storage. The permanent solution is to fix the device tree in your project and re-flash the gateware.
-  * **Camera Sensor Error:** An `imx219` error may appear during boot. This relates to the camera port and can be safely ignored for this project.
+Once the FPGA bitstream has been transferred and flashed on the BeagleV-Fire:
+      * Transfer the `/software` directory to the BeagleV-Fire via `scp`.
+      * Navigate to the directory on the board and run `make` to compile the C code.
+      * Execute the test application with `sudo ./build/radiohound`.
