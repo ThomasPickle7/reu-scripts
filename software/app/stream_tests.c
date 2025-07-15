@@ -5,16 +5,6 @@
 #include "hw_platform.h"
 #include "dma_driver.h"
 
-
-void run_stream_source_validation_test(AxiStreamSource_Regs_t* regs) {
-    printf("\n--- Running AXI Stream Source IP Core Validation Test ---\n");
-    // This is a placeholder for the full validation logic
-    printf("  NOTE: This is a placeholder test. Implement full validation as needed.\n");
-    uint32_t status = regs->STATUS_REG;
-    printf("  Initial STATUS register: 0x%X\n", status);
-    printf("--- Test Complete ---\n");
-}
-
 void run_stream_to_mem_test(CoreAXI4DMAController_Regs_t* dma_regs, int dma_uio_fd, uintptr_t dma_phys_base, uint8_t* dma_virt_base) {
     printf("\n--- Running Stream-to-Memory Test (Simulated) ---\n");
     dma_reset_interrupts(dma_regs, dma_uio_fd);
@@ -51,49 +41,88 @@ void run_stream_to_mem_test(CoreAXI4DMAController_Regs_t* dma_regs, int dma_uio_
     printf("\n  Stream test complete.\n");
 }
 
-void run_control_path_validation_test(CoreAXI4DMAController_Regs_t* dma_regs, int dma_uio_fd, uintptr_t dma_phys_base, uint8_t* dma_virt_base) {
-    printf("\n--- Running DMA Control Path Validation Test (Software-Only) ---\n");
+/**************************************************************************************************
+ * @brief Runs a basic functionality test of the custom AXI Stream Source IP.
+ *
+ * This test configures the DMA to receive a stream and then commands the
+ * AXI Stream Source to send a known data pattern. It then verifies if the
+ * data was received correctly in DDR memory.
+ *************************************************************************************************/
+void run_axi_stream_source_test(
+    Dma_Regs_t* dma_regs, 
+    AxiStreamSource_Regs_t* stream_src_regs, 
+    int dma_uio_fd, 
+    uintptr_t dma_phys_base, 
+    uint8_t* dma_virt_base) 
+{
+    printf("\n--- Running Custom AXI Stream Source -> DDR Test ---\n");
+
+    const size_t test_size = 4096; // Transfer 4KB of data
+    int test_passed = 1;
+
+    // 1. Reset DMA and interrupts to a clean state
     dma_reset_interrupts(dma_regs, dma_uio_fd);
 
-    DmaStreamDescriptor_t* desc = (DmaStreamDescriptor_t*)(dma_virt_base + STREAM_DESCRIPTOR_OFFSET);
-    desc->DEST_ADDR_REG = dma_phys_base + STREAM_DEST_OFFSET;
-    desc->BYTE_COUNT_REG = 1024;
-    desc->CONFIG_REG = (STREAM_OP_INCR | STREAM_FLAG_IRQ_EN) | STREAM_FLAG_VALID | STREAM_FLAG_DEST_RDY;
+    // 2. Prepare the destination buffer in DDR memory
+    uint8_t* virt_dest_buf = dma_virt_base + STREAM_DEST_OFFSET;
+    uintptr_t phys_dest_buf = dma_phys_base + STREAM_DEST_OFFSET;
+    memset(virt_dest_buf, 0, test_size); // Clear the destination buffer
+    printf("  Destination DDR buffer prepared at physical address 0x%lX\n", phys_dest_buf);
+
+    // 3. Configure a single stream descriptor in DMA-accessible memory
+    DmaStreamDescriptor_t* stream_descriptor = (DmaStreamDescriptor_t*)(dma_virt_base + STREAM_DESCRIPTOR_OFFSET);
+    stream_descriptor->DEST_ADDR_REG  = phys_dest_buf;
+    stream_descriptor->BYTE_COUNT_REG = test_size;
+    stream_descriptor->CONFIG_REG = STREAM_OP_INCR | STREAM_FLAG_IRQ_EN | STREAM_FLAG_DEST_RDY | STREAM_FLAG_VALID;
+    
     uintptr_t phys_desc_addr = dma_phys_base + STREAM_DESCRIPTOR_OFFSET;
+    printf("  Stream descriptor configured at physical address 0x%lX\n", phys_desc_addr);
 
-    printf("  Pointing DMA Stream Channel 0 to descriptor at 0x%lX\n", phys_desc_addr);
+    // 4. Point the DMA's stream channel to our descriptor
     dma_regs->STREAM_ADDR_REG[0] = phys_desc_addr;
-    __sync_synchronize();
+    dma_regs->INTR_0_MASK_REG = FDMA_IRQ_MASK_ALL; // Unmask all interrupt types
+    __sync_synchronize(); // Ensure descriptor and register writes are visible to hardware
 
-    dma_regs->INTR_0_MASK_REG = FDMA_IRQ_MASK_ALL;
-    printf("  Attempting to start stream channel 0 via software...\n");
+    // 5. Start the DMA stream channel (it will now wait for the stream)
     dma_regs->START_OPERATION_REG = FDMA_START_STREAM(0);
+    printf("  DMA Stream Channel 0 started. Waiting for data...\n");
+
+    // 6. Configure and start the AXI Stream Source module
+    printf("  Configuring AXI Stream Source to send %zu bytes...\n", test_size);
+    stream_src_regs->NUM_BYTES_REG = test_size;
+    stream_src_regs->DEST_REG = 0; // TDEST value
+    stream_src_regs->CONTROL_REG = 1; // Assert start bit
     __sync_synchronize();
+    printf("  AXI Stream Source started.\n");
 
-    fd_set fds;
-    struct timeval tv;
-    FD_ZERO(&fds);
-    FD_SET(dma_uio_fd, &fds);
-    tv.tv_sec = 5;
-    tv.tv_usec = 0;
-
-    printf("  Waiting for interrupt (with a 5-second timeout)...\n");
-    int retval = select(dma_uio_fd + 1, &fds, NULL, NULL, &tv);
-
-    if (retval > 0) {
-        uint32_t irq_count;
-        read(dma_uio_fd, &irq_count, sizeof(irq_count));
-        uint32_t status = dma_regs->INTR_0_STAT_REG;
-        printf("  Interrupt received! DMA Status Register: 0x%08X\n", status);
-        if (status & FDMA_IRQ_STAT_INVALID_DESC) {
-            printf("\n***** DMA Control Path Test PASSED *****\n");
-        } else {
-            printf("\n***** DMA Control Path Test FAILED *****\n");
+    // 7. Wait for the DMA completion interrupt
+    uint32_t irq_count;
+    printf("  Waiting for DMA completion interrupt...\n");
+    read(dma_uio_fd, &irq_count, sizeof(irq_count));
+    uint32_t status = dma_regs->INTR_0_STAT_REG;
+    printf("  Interrupt received! DMA Status Register: 0x%08X\n", status);
+    
+    // 8. Verify the received data
+    printf("  Verifying received data...\n");
+    for (size_t i = 0; i < test_size / 4; ++i) {
+        uint32_t expected_data = i; // The verilog module sends an incrementing pattern
+        uint32_t actual_data = ((uint32_t*)virt_dest_buf)[i];
+        if (expected_data != actual_data) {
+            printf("  ERROR: Data mismatch at offset 0x%zX! Expected: 0x%08X, Got: 0x%08X\n",
+                   i * 4, expected_data, actual_data);
+            test_passed = 0;
+            break;
         }
-    } else {
-        printf("\n***** DMA Control Path Test INCONCLUSIVE (Timeout) *****\n");
     }
 
-    dma_force_stop(dma_regs);
+    if (test_passed) {
+        printf("\n***** AXI Stream Source Test PASSED *****\n");
+    } else {
+        printf("\n***** AXI Stream Source Test FAILED *****\n");
+    }
+
+    // Cleanup
+    force_dma_stop(dma_regs);
+    stream_src_regs->CONTROL_REG = 0; // De-assert start
     dma_reset_interrupts(dma_regs, dma_uio_fd);
 }

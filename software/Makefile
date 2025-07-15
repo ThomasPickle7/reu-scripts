@@ -1,64 +1,49 @@
-#
-# Makefile for the RadioHound project (Linux Userspace Version)
-#
+# Application Name
+TARGET := radiohound
 
-# --- Toolchain Definition ---
-# Use the native gcc compiler on the BeagleV for a Linux application.
-CROSS_COMPILE ?=
-CC = $(CROSS_COMPILE)gcc
+# Build directory
+BUILD_DIR := build
 
-# --- Project Structure ---
-BUILD_DIR = build
-APP_DIR = app
-BSP_DIR = bsp
-DRIVERS_DIR = drivers
+# Compiler and flags
+CC := gcc
+CFLAGS := -O0 -g -Wall -march=rv64gc -mabi=lp64d
+LDFLAGS :=
 
-# --- Output File Names ---
-TARGET = radiohound
-TARGET_EXE = $(BUILD_DIR)/$(TARGET)
+# Source directories
+APP_DIR := app
+BSP_DIR := bsp
+DRV_DIR := drivers
 
-# --- Compiler and Linker Flags ---
-# Standard flags for a 64-bit RISC-V Linux application.
-CFLAGS = -O0 -g -Wall -march=rv64gc -mabi=lp64d
+# Include directories
+INCLUDES := -I$(APP_DIR) -I$(BSP_DIR) -I$(DRV_DIR)
 
-# Add all subdirectories to the include path.
-INCLUDES = -I$(APP_DIR) -I$(BSP_DIR) -I$(DRIVERS_DIR)
+# ------------------------------------------------------------------------------
+# Simplified Source List: We only need to compile the consolidated main.c
+# ------------------------------------------------------------------------------
+C_SRCS := $(APP_DIR)/main.c
 
-# For a standard Linux app, we link against the C library, so LDFLAGS is minimal.
-LDFLAGS =
+# Object files
+OBJS := $(patsubst %.c, $(BUILD_DIR)/%.o, $(C_SRCS))
 
-# --- Source and Object Files ---
-# Find all .c files in the source directories.
-SRCS = $(wildcard $(APP_DIR)/*.c) $(wildcard $(BSP_DIR)/*.c) $(wildcard $(DRIVERS_DIR)/*.c)
+# Executable path
+EXECUTABLE := $(BUILD_DIR)/$(TARGET)
 
-# Create a list of object files, placing them in the build directory.
-OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(SRCS))
+.PHONY: all clean
 
+all: $(EXECUTABLE)
 
-# =============================================================================
-# Makefile Rules
-# =============================================================================
+# Rule to link the final executable
+$(EXECUTABLE): $(OBJS)
+	@echo "LD   $(EXECUTABLE)"
+	@$(CC) $(OBJS) -o $@ $(LDFLAGS)
 
-# Default rule: build the final executable.
-all: $(TARGET_EXE)
-
-# Rule to link the final executable.
-$(TARGET_EXE): $(OBJS)
-	@mkdir -p $(BUILD_DIR)
-	@echo "LD   $@"
-	$(CC) $(LDFLAGS) $^ -o $@
-
-# Pattern rule to compile any .c file into its corresponding .o file.
-# This single rule handles all source directories.
+# Rule to compile C source files into object files
 $(BUILD_DIR)/%.o: %.c
-	@mkdir -p $(dir $@)
 	@echo "CC   $<"
-	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+	@mkdir -p $(dir $@)
+	@$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 
-# Rule to clean up all build artifacts.
+# Clean the build directory
 clean:
 	@echo "CLEAN"
 	@rm -rf $(BUILD_DIR)
-
-# Phony targets are not real files.
-.PHONY: all clean
