@@ -96,82 +96,61 @@ output logic [1:0]                    S_AXI_RRESP;
 output logic                          S_AXI_RVALID;
 input  logic                          S_AXI_RREADY;
 
-
 ////////////////////////////////////////////////////////////////////////////////
-// AXI4-Lite Register Logic
+// AXI4-Lite Register Logic -- More Robust Version
 ////////////////////////////////////////////////////////////////////////////////
 logic [C_S_AXI_ADDR_WIDTH-1:0] axi_awaddr;
-logic                          axi_awready;
-logic                          axi_wready;
-logic [1:0]                    axi_bresp;
-logic                          axi_bvalid;
+logic                          axi_awready_int;
+logic                          axi_wready_int;
+
 logic [C_S_AXI_ADDR_WIDTH-1:0] axi_araddr;
-logic                          axi_arready;
-logic [C_S_AXI_DATA_WIDTH-1:0] axi_rdata;
-logic [1:0]                    axi_rresp;
-logic                          axi_rvalid;
+logic                          axi_arready_int;
+
+logic [C_S_AXI_DATA_WIDTH-1:0] axi_rdata_int;
 
 // Internal Registers
 logic [C_S_AXI_DATA_WIDTH-1:0] reg_control;
 logic [C_S_AXI_DATA_WIDTH-1:0] reg_status;
 logic [C_S_AXI_DATA_WIDTH-1:0] reg_num_bytes;
 logic [C_S_AXI_DATA_WIDTH-1:0] reg_dest;
-
 logic                          start_pulse;
 
-// Assign outputs
-assign S_AXI_AWREADY = axi_awready;
-assign S_AXI_WREADY  = axi_wready;
-assign S_AXI_BRESP   = axi_bresp;
-assign S_AXI_BVALID  = axi_bvalid;
-assign S_AXI_ARREADY = axi_arready;
-assign S_AXI_RDATA   = axi_rdata;
-assign S_AXI_RRESP   = axi_rresp;
-assign S_AXI_RVALID  = axi_rvalid;
+// Assign outputs from internal signals
+assign S_AXI_AWREADY = axi_awready_int;
+assign S_AXI_WREADY  = axi_wready_int;
+assign S_AXI_ARREADY = axi_arready_int;
+assign S_AXI_RDATA   = axi_rdata_int;
+assign S_AXI_BRESP   = 2'b00; // OKAY response
+assign S_AXI_RRESP   = 2'b00; // OKAY response
 
 // AXI Write Logic
-always_ff @(posedge clock) begin
-    if (!resetn) begin
-        axi_awready <= 1'b0;
-        axi_awaddr  <= '0;
-    end else begin
-        if (~axi_awready && S_AXI_AWVALID && S_AXI_WVALID) begin
-            axi_awready <= 1'b1;
-            axi_awaddr  <= S_AXI_AWADDR;
-        end else begin
-            axi_awready <= 1'b0;
-        end
-    end
-end
+// axi_awready is asserted when there is no outstanding write transaction.
+assign axi_awready_int = ~axi_wready_int;
 
-always_ff @(posedge clock) begin
-    if (!resetn) begin
-        axi_wready <= 1'b0;
-    end else begin
-        if (~axi_wready && S_AXI_WVALID && S_AXI_AWVALID) begin
-            axi_wready <= 1'b1;
-        end else begin
-            axi_wready <= 1'b0;
-        end
-    end
-end
+// The WREADY signal is asserted when the address is valid, and we are not already waiting for data.
+assign axi_wready_int = (axi_awready_int && S_AXI_AWVALID) || (axi_wready_int && ~S_AXI_WVALID);
 
+// BVALID is asserted when a write transaction completes.
+logic axi_bvalid_int;
+assign S_AXI_BVALID = axi_bvalid_int;
+
+// Register write logic
 always_ff @(posedge clock) begin
     if (!resetn) begin
         reg_control   <= '0;
         reg_num_bytes <= '0;
         reg_dest      <= '0;
-        start_pulse   <= 1'b0;
+        axi_awaddr    <= '0;
     end else begin
-        start_pulse <= 1'b0; // Pulse is only one cycle
-        if (axi_awready && S_AXI_AWVALID && axi_wready && S_AXI_WVALID) begin
+        // Latch the address when the master provides it
+        if (axi_awready_int && S_AXI_AWVALID) begin
+            axi_awaddr <= S_AXI_AWADDR;
+        end
+
+        // Perform the register write when both address and data are valid
+        if (axi_wready_int && S_AXI_WVALID) begin
             case (axi_awaddr)
-                ADDR_CONTROL_REG: begin
-                    reg_control <= S_AXI_WDATA;
-                    if (S_AXI_WDATA[0]) begin // Check for start bit
-                        start_pulse <= 1'b1;
-                    end
-                end
+                ADDR_CONTROL_REG:   reg_control   <= S_AXI_WDATA;
                 ADDR_NUM_BYTES_REG: reg_num_bytes <= S_AXI_WDATA;
                 ADDR_DEST_REG:      reg_dest      <= S_AXI_WDATA;
                 default:;
@@ -180,62 +159,78 @@ always_ff @(posedge clock) begin
     end
 end
 
+// Start pulse generation
 always_ff @(posedge clock) begin
     if (!resetn) begin
-        axi_bvalid <= 1'b0;
-        axi_bresp  <= 2'b0;
+        start_pulse <= 1'b0;
     end else begin
-        if (axi_awready && S_AXI_AWVALID && axi_wready && S_AXI_WVALID && ~axi_bvalid) begin
-            axi_bvalid <= 1'b1;
-            axi_bresp  <= 2'b0; // OKAY
-        end else if (S_AXI_BREADY && axi_bvalid) begin
-            axi_bvalid <= 1'b0;
+        // Generate a single-cycle pulse when the start bit is written
+        if (axi_wready_int && S_AXI_WVALID && axi_awaddr == ADDR_CONTROL_REG && S_AXI_WDATA[0]) begin
+            start_pulse <= 1'b1;
+        end else begin
+            start_pulse <= 1'b0;
         end
     end
 end
+
+// Write response logic
+always_ff @(posedge clock) begin
+    if (!resetn) begin
+        axi_bvalid_int <= 1'b0;
+    end else begin
+        if (axi_wready_int && S_AXI_WVALID && ~axi_bvalid_int) begin
+            axi_bvalid_int <= 1'b1;
+        end else if (S_AXI_BREADY) begin
+            axi_bvalid_int <= 1'b0;
+        end
+    end
+end
+
 
 // AXI Read Logic
+assign axi_arready_int = ~S_AXI_RVALID; // Accept a new address when not currently sending data
+
+// RVALID logic
+logic axi_rvalid_int;
+assign S_AXI_RVALID = axi_rvalid_int;
+
+// Read response logic
 always_ff @(posedge clock) begin
     if (!resetn) begin
-        axi_arready <= 1'b0;
-        axi_araddr  <= '0;
+        axi_rvalid_int <= 1'b0;
     end else begin
-        if (~axi_arready && S_AXI_ARVALID) begin
-            axi_arready <= 1'b1;
-            axi_araddr  <= S_AXI_ARADDR;
-        end else begin
-            axi_arready <= 1'b0;
+        // When the master requests a read and we are ready
+        if (axi_arready_int && S_AXI_ARVALID) begin
+            axi_rvalid_int <= 1'b1;
+        end else if (S_AXI_RREADY) begin
+            axi_rvalid_int <= 1'b0;
+        end
+    end
+end
+
+// RDATA (read data) mux
+always_ff @(posedge clock) begin
+    if (!resetn) begin
+        axi_araddr <= '0;
+    end else begin
+        if (axi_arready_int && S_AXI_ARVALID) begin
+            axi_araddr <= S_AXI_ARADDR;
         end
     end
 end
 
 always_ff @(posedge clock) begin
-    if (!resetn) begin
-        axi_rvalid <= 1'b0;
-        axi_rresp  <= 2'b0;
-    end else begin
-        if (axi_arready && S_AXI_ARVALID && ~axi_rvalid) begin
-            axi_rvalid <= 1'b1;
-            axi_rresp  <= 2'b0; // OKAY
-        end else if (S_AXI_RREADY && axi_rvalid) begin
-            axi_rvalid <= 1'b0;
-        end
-    end
-end
-
-always_ff @(posedge clock) begin
-    if (axi_arready && S_AXI_ARVALID) begin
-        case (axi_araddr)
-            ADDR_CONTROL_REG:   axi_rdata <= reg_control;
-            ADDR_STATUS_REG:    axi_rdata <= reg_status;
-            ADDR_NUM_BYTES_REG: axi_rdata <= reg_num_bytes;
-            ADDR_DEST_REG:      axi_rdata <= reg_dest;
-            default:            axi_rdata <= '0;
+    // Latch read data when a read is initiated
+    if (axi_arready_int && S_AXI_ARVALID) begin
+        case (S_AXI_ARADDR)
+            ADDR_CONTROL_REG:   axi_rdata_int <= reg_control;
+            ADDR_STATUS_REG:    axi_rdata_int <= reg_status;
+            ADDR_NUM_BYTES_REG: axi_rdata_int <= reg_num_bytes;
+            ADDR_DEST_REG:      axi_rdata_int <= reg_dest;
+            default:            axi_rdata_int <= '0;
         endcase
     end
 end
-
-
 ////////////////////////////////////////////////////////////////////////////////
 // Core Stream Generator Logic
 ////////////////////////////////////////////////////////////////////////////////
@@ -334,3 +329,5 @@ end
 assign TID   = '0;
 
 endmodule
+
+
