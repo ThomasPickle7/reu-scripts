@@ -10,7 +10,7 @@
 
 // --- Linux Device Identifiers ---
 #define UIO_DMA_DEVNAME          "dma-controller@60010000"
-#define UIO_STREAM_SRC_DEVNAME   "stream-source@60000000"
+#define UIO_STREAM_SRC_DEVNAME   "uio@60000000"
 #define UDMA_BUF_DEVNAME         "/dev/udmabuf-ddr-nc0"
 #define UDMA_BUF_SYNC_DEVNAME    "udmabuf-ddr-nc0" // Name used for getting phys addr
 
