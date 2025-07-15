@@ -1,9 +1,9 @@
 #ifndef DIAGNOSTICS_H_
 #define DIAGNOSTICS_H_
 
-#include "dma_driver.h" // <-- FIX: Include the driver to get type definitions.
+#include "dma_driver.h"
 
-// Define the old type name as an alias for the new one for compatibility.
+// Define the old type name as an alias
 typedef Dma_Regs_t CoreAXI4DMAController_Regs_t;
 
 /**************************************************************************************************

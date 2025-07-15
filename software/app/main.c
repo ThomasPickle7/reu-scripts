@@ -19,11 +19,16 @@
 #define NUM_UIO_DEVICES 32
 #define MAP_SIZE 4096UL
 
-// --- Linux Platform Helpers ---
 
+// --- Linux Platform Helpers ---
 static int get_uio_device_number(const char *id) {
-    FILE *fp; int i; char file_id[ID_STR_LEN]; char sysfs_path[SYSFS_PATH_LEN];
+    // This function searches for a UIO device by its name in the sysfs filesystem.
+    FILE *fp; 
+    int i; 
+    char file_id[ID_STR_LEN]; 
+    char sysfs_path[SYSFS_PATH_LEN];
     for (i = 0; i < NUM_UIO_DEVICES; i++) {
+        // Construct the sysfs path for the UIO device
         snprintf(sysfs_path, SYSFS_PATH_LEN, "/sys/class/uio/uio%d/name", i);
         fp = fopen(sysfs_path, "r"); if (fp == NULL) break;
         fscanf(fp, "%31s", file_id); fclose(fp);
@@ -32,10 +37,12 @@ static int get_uio_device_number(const char *id) {
     return -1;
 }
 
+
 static uint64_t get_udma_phys_addr(const char* uio_device_name) {
     char sysfs_path[SYSFS_PATH_LEN];
     FILE* fp;
     uint64_t paddr;
+    
     snprintf(sysfs_path, SYSFS_PATH_LEN, "/sys/class/u-dma-buf/%s/phys_addr", uio_device_name);
     fp = fopen(sysfs_path, "r");
     if (fp == NULL) {

@@ -4,7 +4,7 @@
 /**************************************************************************************************
  * @brief Runs a series of diagnostic checks on the DMA and Stream Source peripherals.
  *
- * This function reads and prints key hardware registers to verify that the memory-mapped
+ * This function reads and prints hardware registers to verify that the memory-mapped
  * peripherals are accessible and to report their status.
  *
  * @param dma_regs          Pointer to the mapped DMA controller registers.
@@ -15,16 +15,16 @@ void run_diagnostics(Dma_Regs_t* dma_regs, AxiStreamSource_Regs_t* stream_src_re
 
     // Check if the pointers are valid before dereferencing
     if (!dma_regs) {
-        printf("  ERROR: DMA registers pointer is NULL. Cannot perform diagnostics.\n");
+        printf("  ERROR: DMA registers pointer is NULL\n");
         return;
     }
     if (!stream_src_regs) {
-        printf("  ERROR: AXI Stream Source registers pointer is NULL. Cannot perform diagnostics.\n");
+        printf("  ERROR: AXI Stream Source registers pointer is NULL\n");
         return;
     }
 
     // 1. Diagnose the DMA Controller
-    printf("1. Diagnosing DMA Controller...\n");
+    printf("1. Diagnosing DMA Controller\n");
     // Reading the version register is a safe way to check for bus connectivity.
     uint32_t dma_version = dma_regs->VERSION_REG;
     printf("   - DMA Controller Version Register: 0x%08X\n", dma_version);
