@@ -38,8 +38,7 @@ void run_diagnostics(Dma_Regs_t* dma_regs, AxiStreamSource_Regs_t* stream_src_re
 
 
     // 2. Diagnose the AXI Stream Source
-    printf("\n2. Diagnosing AXI Stream Source...\n");
-    // Reading the status register is a safe check.
+    printf("\n2. Diagnosing AXI Stream Source...\n");   
     uint32_t stream_status = stream_src_regs->STATUS_REG;
     printf("   - AXI Stream Source Status Register: 0x%08X\n", stream_status);
     if (stream_status & 0x1) {
