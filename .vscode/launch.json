@@ -8,8 +8,8 @@
       "args": [],
       "stopAtEntry": false,
       "externalConsole": true,
-      "cwd": "c:/Users/tapic/Documents/GitHub/reu-scripts/driver_code/src",
-      "program": "c:/Users/tapic/Documents/GitHub/reu-scripts/driver_code/src/build/Debug/outDebug",
+      "cwd": "c:/Users/tapic/Documents/GitHub/reu-scripts/prototypes/firmware",
+      "program": "c:/Users/tapic/Documents/GitHub/reu-scripts/prototypes/firmware/build/Debug/outDebug",
       "MIMode": "gdb",
       "miDebuggerPath": "gdb",
       "setupCommands": [
