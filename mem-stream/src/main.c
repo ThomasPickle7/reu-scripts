@@ -4,10 +4,6 @@
  * This version uses the UIO framework and implements a chained descriptor
  * throughput test with pre-flight configuration verification.
  *
- * v6: Corrected the throughput test to use a valid DDR memory source
- * instead of the smaller LSRAM, resolving memory access violations.
- * Added comments explaining how to enable a true cyclic test.
- * v7: Integrated Stream Descriptor test setup and corrected register map.
  */
 
 #include <stdio.h>
@@ -18,8 +14,8 @@
 #include <sys/mman.h>
 #include <errno.h>
 #include <stdint.h>
-#include <time.h>       // For high-resolution timing
-#include "mpu_driver.h" // For MPU setup
+#include <time.h>       
+#include "mpu_driver.h" 
 
 /*
  * This struct accurately represents a single DMA descriptor block in hardware,
@@ -111,7 +107,6 @@ typedef struct {
 #define FDMA_START              (1U << 0) // Start with descriptor 0
 #define FDMA_IRQ_MASK           (1U << 0) // Unmask completion interrupt
 #define FDMA_IRQ_CLEAR          (1U << 0) // Clear completion interrupt
-// For debugging, it's useful to unmask all error interrupts as well: #define FDMA_IRQ_MASK 0x0F
 
 // Helper constants
 #define SYSFS_PATH_LEN          (128)
@@ -177,14 +172,14 @@ void run_loopback_test(CoreAXI4DMAController_Regs_t* dma_regs, int dma_uio_fd, i
     dma_regs->DESCRIPTOR[0].CONFIG_REG |= FLAG_VALID;
     
     // Enable and start DMA
-    dma_regs->INTERRUPT[0].MASK_REG = FDMA_IRQ_MASK; // FIX: Corrected register access
+    dma_regs->INTERRUPT[0].MASK_REG = FDMA_IRQ_MASK; // Corrected register access
     dma_regs->START_OPERATION_REG = FDMA_START;
 
     printf("  Waiting for DMA completion interrupt...\n");
     uint32_t irq_count;
     read(dma_uio_fd, &irq_count, sizeof(irq_count));
     printf("  Interrupt received!\n");
-    dma_regs->INTERRUPT[0].CLEAR_REG = FDMA_IRQ_CLEAR; // FIX: Corrected register access
+    dma_regs->INTERRUPT[0].CLEAR_REG = FDMA_IRQ_CLEAR; // Corrected register access
 
     // Verify data
     if (memcmp(src_buf, dest_buf, LOOPBACK_BUFFER_SIZE) == 0) {
@@ -268,7 +263,7 @@ void run_chained_throughput_test(CoreAXI4DMAController_Regs_t* dma_regs, int dma
     printf("  Descriptor configuration verified successfully.\n");
     
     // --- Step 4: Run the transfer and time it ---
-    printf("\n  Performing single kick-off for %luMB transfer...\n", (unsigned long)(TOTAL_CHAINED_TRANSFER_SIZE / (1024 * 1024))); // FIX: Cast to unsigned long
+    printf("\n  Performing single kick-off for %luMB transfer...\n", (unsigned long)(TOTAL_CHAINED_TRANSFER_SIZE / (1024 * 1024)));
     
     struct timespec start_time, end_time;
     clock_gettime(CLOCK_MONOTONIC, &start_time);
@@ -280,7 +275,7 @@ void run_chained_throughput_test(CoreAXI4DMAController_Regs_t* dma_regs, int dma
 
     clock_gettime(CLOCK_MONOTONIC, &end_time);
     
-    dma_regs->INTERRUPT[0].CLEAR_REG = FDMA_IRQ_CLEAR; // FIX: Corrected register access
+    dma_regs->INTERRUPT[0].CLEAR_REG = FDMA_IRQ_CLEAR;
     printf("  Final interrupt received and cleared.\n");
 
     // Calculate and print throughput
@@ -288,7 +283,7 @@ void run_chained_throughput_test(CoreAXI4DMAController_Regs_t* dma_regs, int dma
     double throughput = (double)TOTAL_CHAINED_TRANSFER_SIZE / elapsed_time / (1024.0 * 1024.0);
 
     printf("\n***** Chained Throughput Test Complete *****\n");
-    printf("Transferred %lu MB in %.4f seconds.\n", (unsigned long)(TOTAL_CHAINED_TRANSFER_SIZE / (1024*1024)), elapsed_time); // FIX: Cast to unsigned long
+    printf("Transferred %lu MB in %.4f seconds.\n", (unsigned long)(TOTAL_CHAINED_TRANSFER_SIZE / (1024*1024)), elapsed_time);
     printf("Calculated Throughput: %.2f MB/s\n", throughput);
     printf("******************************************\n");
 }
@@ -307,7 +302,7 @@ void run_stream_descriptor_test(CoreAXI4DMAController_Regs_t* dma_regs, int mem_
     // Define page size for mmap alignment
     const uint32_t PAGE_SIZE = 4096;
 
-    // FIX: Ensure all physical addresses are page-aligned for mmap
+    // Ensure all physical addresses are page-aligned for mmap
     uint32_t stream_desc_phys_addr = DDR_BUFFER_BASE; 
     uint32_t dest_buf_phys_addr = stream_desc_phys_addr + PAGE_SIZE; // Place buffer on the next page
     uint32_t transfer_size = 1024;
@@ -354,11 +349,6 @@ void run_stream_descriptor_test(CoreAXI4DMAController_Regs_t* dma_regs, int mem_
     printf("\n***** Stream Descriptor Setup Complete *****\n");
     printf("The DMA is now configured to process a stream transaction on TDEST=0.\n");
     printf("To proceed, a hardware AXI4-Stream initiator would need to start a transfer.\n");
-    printf("Upon receiving data, the DMA would:\n");
-    printf(" 1. Fetch the descriptor from 0x%08X.\n", stream_desc_phys_addr);
-    printf(" 2. Verify the 'Descriptor Valid' and 'Destination Data Ready' bits.\n");
-    printf(" 3. Transfer %u bytes of stream data to destination 0x%08X.\n", transfer_size, dest_buf_phys_addr);
-    printf(" 4. Generate an interrupt on Interrupt 0 upon completion.\n");
     printf("**********************************************\n");
 
     // Cleanup
