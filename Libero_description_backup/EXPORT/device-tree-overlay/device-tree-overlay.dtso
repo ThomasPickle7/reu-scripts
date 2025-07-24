@@ -1,0 +1,53 @@
+/dts-v1/;
+/plugin/;
+
+&{/chosen} {
+	overlays {
+		MEM-ACCESS-GATEWARE = "GATEWARE_GIT_VERSION";
+	};
+};
+
+&{/} {
+	fabric-bus@40000000 {
+		fpgadma: dma-controller@60010000 {
+			compatible = "microchip,mpfs-fpga-dma";
+			reg = <0x0 0x60010000 0x0 0x10000>;
+			interrupt-parent = <&plic>;
+			interrupts = <121>;
+			#dma-cells = <1>;
+			status = "disabled";
+		};
+
+		stream: uio@60000000 {
+			compatible = "generic-uio";
+			linux,uio-name = "fpga_stream";
+			reg = <0x0 0x60000000 0x0 0x10000>;
+			status = "disabled";
+		};
+	};
+
+	reserved-memory {
+		fabricbuf1ddrnc: buffer@c8000000 {
+			compatible = "shared-dma-pool";
+			reg = <0x0 0xc8000000 0x0 0x2000000>;
+			no-map;
+		};
+	};
+
+	udmabuf1 {
+		compatible = "ikwzm,u-dma-buf";
+		device-name = "udmabuf-ddr-nc0";
+		minor-number = <1>;
+		size = <0x0 0x2000000>;
+		memory-region = <&fabricbuf1ddrnc>;
+		sync-mode = <3>;
+	};
+};
+
+&fpgadma {
+	status = "okay";
+};
+
+&stream {
+	status = "okay";
+};
